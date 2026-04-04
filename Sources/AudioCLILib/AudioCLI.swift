@@ -17,6 +17,8 @@ public struct AudioCLI: ParsableCommand {
             DenoiseCommand.self,
             KokoroCommand.self,
             Qwen3TTSCoreMLCommand.self,
+            SessionCommand.self,
+            SpeakersCommand.self,
         ]
     )
 

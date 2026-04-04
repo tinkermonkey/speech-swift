@@ -67,10 +67,14 @@ Project skills in `.claude/skills/`:
 - `Sources/SpeechVAD/` — VAD (Silero + Pyannote), speaker diarization, speaker embedding (WeSpeaker)
 - `Sources/SpeechEnhancement/` — Noise suppression (DeepFilterNet3, CoreML)
 - `Sources/Qwen3Chat/` — On-device LLM chat (Qwen3.5-0.8B, MLX + CoreML, INT4/INT8)
+- `Sources/SpeakerRegistry/` — Speaker identity tracking (centroid matching, pipeline sessions)
+- `Sources/SpeechCore/` — Shared voice pipeline types (`VoicePipeline`, `MemoryTier` for iOS RAM-tier detection)
+- `Sources/AudioServer/` — Hummingbird HTTP/WebSocket server; real-time speech via `/v1/realtime`
 - `Sources/MLXCommon/` — Shared MLX utilities (weight loading, quantized layers, memory estimation)
 - `Sources/AudioCommon/` — Audio I/O, protocols, HuggingFace downloader
 - `Sources/AudioCLILib/` — CLI commands
 - `Sources/AudioCLI/` — CLI entry point (`audio` binary)
+- `Sources/AudioServerCLI/` — CLI entry point for the AudioServer
 - `Tests/` — Unit and integration tests
 - `scripts/` — Model conversion (PyTorch → MLX/CoreML), benchmarking
 - `Examples/` — Demo apps (PersonaPlexDemo, SpeechDemo, iOSEchoDemo)
@@ -82,13 +86,14 @@ Project skills in `.claude/skills/`:
 - Models are downloaded from HuggingFace on first use, cached in `~/Library/Caches/qwen3-speech/`
 - All audio processing uses Float32 PCM, resampled to model-specific rates internally
 - `DiarizedSegment`, `SpeechSegment`, protocol types defined in `Sources/AudioCommon/Protocols.swift`
+- `MemoryTier` (in `SpeechCore`) auto-detects device RAM on iOS and selects `.full`/`.standard`/`.constrained`/`.minimal` model configurations — use when adding iOS targets to avoid OOM with multiple CoreML models
 - Tests that use MLX arrays require the compiled metallib; config/logic-only tests work without it
 
 ## Testing
 
-Safe tests (no GPU/model download required):
+Unit tests only (no GPU/model download required — used in CI):
 ```bash
-make test
+swift test --skip E2E
 ```
 
 Full test suite (requires metallib + model downloads):
@@ -133,6 +138,11 @@ The `audio` binary is the main entry point:
 .build/release/audio denoise noisy.wav                 # Speech enhancement
 .build/release/audio kokoro "Hello" --voice af_heart   # Kokoro TTS (iOS)
 .build/release/audio qwen3-tts-coreml "Hello"          # Qwen3-TTS CoreML (6-model pipeline)
+.build/release/audio session process meeting.wav       # Diarize + resolve speakers against registry
+.build/release/audio speakers list                     # List all registered speakers
+.build/release/audio speakers label 3 "Alice"          # Assign name to speaker id 3
+.build/release/audio speakers merge 3 7               # Merge speaker 3 into 7
+.build/release/audio speakers show 3                   # Show all segments for speaker 3
 ```
 
 ## Documentation

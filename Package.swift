@@ -56,6 +56,10 @@ let package = Package(
             name: "Qwen3Chat",
             targets: ["Qwen3Chat"]
         ),
+        .library(
+            name: "SpeakerRegistry",
+            targets: ["SpeakerRegistry"]
+        ),
         .executable(
             name: "audio",
             targets: ["AudioCLI"]
@@ -70,7 +74,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", "2.5.0"..<"2.17.0"),
-        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.6.0")
+        .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.6.0"),
+        .package(url: "https://github.com/groue/GRDB.swift", from: "6.0.0")
     ],
     targets: [
         .target(
@@ -185,6 +190,14 @@ let package = Package(
             ]
         ),
         .target(
+            name: "SpeakerRegistry",
+            dependencies: [
+                "AudioCommon",
+                "SpeechVAD",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ]
+        ),
+        .target(
             name: "AudioCLILib",
             dependencies: [
                 "Qwen3ASR",
@@ -196,6 +209,7 @@ let package = Package(
                 "SpeechEnhancement",
                 "ParakeetASR",
                 "KokoroTTS",
+                "SpeakerRegistry",
                 "AudioCommon",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
@@ -313,6 +327,13 @@ let package = Package(
                 "SpeechVAD",
                 "KokoroTTS",
                 "ParakeetASR"
+            ]
+        ),
+        .testTarget(
+            name: "SpeakerRegistryTests",
+            dependencies: [
+                "SpeakerRegistry",
+                "AudioCommon",
             ]
         )
     ]
