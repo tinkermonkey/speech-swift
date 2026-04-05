@@ -17,11 +17,13 @@ public struct AudioServer {
     let state: ModelState
     let host: String
     let port: Int
+    let logRequests: Bool
 
-    public init(host: String = "127.0.0.1", port: Int = 8080, preload: Bool = false) {
+    public init(host: String = "127.0.0.1", port: Int = 8080, logRequests: Bool = false) {
         self.state = ModelState()
         self.host = host
         self.port = port
+        self.logRequests = logRequests
     }
 
     public func run() async throws {
@@ -54,6 +56,10 @@ public struct AudioServer {
     func buildRouter() -> Router<BasicRequestContext> {
         let router = Router()
         let state = self.state
+
+        if logRequests {
+            router.add(middleware: LogRequestsMiddleware(.info))
+        }
 
         addRegistryRoutes(to: router)
 

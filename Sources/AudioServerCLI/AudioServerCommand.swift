@@ -18,8 +18,11 @@ struct AudioServerCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Load all models on startup (slower start, faster first request)")
     var preload: Bool = false
 
+    @Flag(name: .long, help: "Log all incoming HTTP requests (method, path, status)")
+    var logRequests: Bool = false
+
     func run() async throws {
-        let server = AudioServer(host: host, port: port)
+        let server = AudioServer(host: host, port: port, logRequests: logRequests)
 
         if preload {
             print("Preloading models...")
