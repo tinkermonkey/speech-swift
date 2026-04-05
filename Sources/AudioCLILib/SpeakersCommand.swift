@@ -21,7 +21,7 @@ public struct SpeakersCommand: ParsableCommand {
 // MARK: - Shared option
 
 struct RegistryOptions: ParsableArguments {
-    @Option(name: .long, help: "Registry database path (default: ~/Library/Caches/qwen3-speech/speaker-registry.sqlite)")
+    @Option(name: .long, help: "Registry file path (default: ~/Library/Caches/qwen3-speech/speaker-registry.json)")
     var registryPath: String?
 
     var url: URL { registryPath.map { URL(fileURLWithPath: $0) } ?? .defaultRegistryURL }
@@ -44,7 +44,7 @@ extension SpeakersCommand {
         public func run() throws {
             let reg = try SpeakerRegistry.open(at: registry.url)
             try runAsync {
-                let speakers = try await reg.speakers()
+                let speakers = await reg.speakers()
                 if json {
                     let items = speakers.map { s -> [String: Any] in
                         var d: [String: Any] = ["id": s.id ?? -1, "label": s.label]
@@ -103,7 +103,7 @@ extension SpeakersCommand {
     public struct MergeSubcommand: ParsableCommand {
         public static let configuration = CommandConfiguration(
             commandName: "merge",
-            abstract: "Merge one speaker into another (re-points all segments, blends centroids)"
+            abstract: "Merge one speaker into another (blends centroids, removes source)"
         )
 
         @Argument(help: "Source speaker id (will be deleted)") public var src: Int64
@@ -128,7 +128,7 @@ extension SpeakersCommand {
     public struct ShowSubcommand: ParsableCommand {
         public static let configuration = CommandConfiguration(
             commandName: "show",
-            abstract: "Show all segments attributed to a speaker"
+            abstract: "Show details for a registered speaker"
         )
 
         @Argument(help: "Speaker id") public var speakerId: Int64
@@ -140,47 +140,27 @@ extension SpeakersCommand {
         public func run() throws {
             let reg = try SpeakerRegistry.open(at: registry.url)
             try runAsync {
-                guard let speaker = try await reg.speaker(id: speakerId) else {
+                guard let speaker = await reg.speaker(id: speakerId) else {
                     print("Speaker \(speakerId) not found.")
                     return
                 }
-                let segments = try await reg.segments(for: speakerId)
-
                 if json {
-                    let items = segments.map { seg -> [String: Any] in
-                        var d: [String: Any] = [
-                            "id": seg.id ?? -1,
-                            "session_id": seg.sessionId,
-                            "start": seg.startTime,
-                            "end": seg.endTime,
-                            "duration": seg.duration,
-                        ]
-                        if let t = seg.transcriptText { d["transcript"] = t }
-                        return d
-                    }
-                    let output: [String: Any] = [
-                        "speaker": ["id": speaker.id ?? -1, "label": speaker.label],
-                        "segments": items,
+                    var d: [String: Any] = [
+                        "id": speaker.id ?? -1,
+                        "label": speaker.label,
+                        "is_labeled": speaker.isLabeled,
+                        "created_at": ISO8601DateFormatter().string(from: speaker.createdAt),
                     ]
-                    if let data = try? JSONSerialization.data(withJSONObject: output, options: .prettyPrinted),
+                    if let name = speaker.displayName { d["display_name"] = name }
+                    if let notes = speaker.notes { d["notes"] = notes }
+                    if let data = try? JSONSerialization.data(withJSONObject: d, options: .prettyPrinted),
                        let str = String(data: data, encoding: .utf8) {
                         print(str)
                     }
                 } else {
-                    print("Speaker: \(speaker.label) (id=\(speakerId))")
-                    if segments.isEmpty {
-                        print("  No segments.")
-                    } else {
-                        for seg in segments {
-                            let s = String(format: "%.2f", seg.startTime)
-                            let e = String(format: "%.2f", seg.endTime)
-                            let d = String(format: "%.2f", seg.duration)
-                            let tx = seg.transcriptText.map { " \"\($0)\"" } ?? ""
-                            print("  session=\(seg.sessionId) [\(s)s - \(e)s] (\(d)s)\(tx)")
-                        }
-                        let total = segments.reduce(0.0) { $0 + $1.duration }
-                        print("\n\(segments.count) segment(s), \(String(format: "%.2f", total))s total")
-                    }
+                    print("id=\(speaker.id ?? -1)  \(speaker.label)")
+                    print("created: \(ISO8601DateFormatter().string(from: speaker.createdAt))")
+                    if let notes = speaker.notes { print("notes:   \(notes)") }
                 }
             }
         }

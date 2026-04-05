@@ -34,7 +34,7 @@ extension SessionCommand {
         @Option(name: .long, help: "Speaker embedding engine: mlx (default) or coreml")
         public var embeddingEngine: String = "mlx"
 
-        @Option(name: .long, help: "Registry database path (default: ~/Library/Caches/qwen3-speech/speaker-registry.sqlite)")
+        @Option(name: .long, help: "Registry file path (default: ~/Library/Caches/qwen3-speech/speaker-registry.json)")
         public var registryPath: String?
 
         @Flag(name: .long, help: "Output as JSON")
@@ -91,7 +91,7 @@ extension SessionCommand {
                     let d = String(format: "%.2f", seg.duration)
                     print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)")
                 }
-                print("\n--- \(result.numSpeakers) speaker(s) | session id: \(result.session.id ?? -1) ---")
+                print("\n--- \(result.numSpeakers) speaker(s) ---")
             }
             print("Processed in \(String(format: "%.2f", elapsed))s")
         }
@@ -108,7 +108,6 @@ extension SessionCommand {
                 ])
             }
             let output: [String: Any] = [
-                "session_id": result.session.id ?? -1,
                 "num_speakers": result.numSpeakers,
                 "segments": items,
             ]

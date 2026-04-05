@@ -2,7 +2,6 @@ import Foundation
 import Hummingbird
 import NIOCore
 import AudioCommon
-import SpeechVAD
 import SpeakerRegistry
 
 // MARK: - Registry Route Registration
@@ -17,8 +16,8 @@ extension AudioServer {
         // MARK: Sessions
 
         // POST /registry/sessions
-        // Body: raw WAV bytes or multipart with a "file" field (same shape as /v1/audio/transcriptions).
-        // Returns: ProcessedSessionResponse
+        // Body: raw WAV bytes or multipart/form-data with a "file" field.
+        // Diarizes the audio, resolves speakers against the registry, and returns the result.
         group.post("sessions") { request, _ in
             let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
             let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
@@ -36,41 +35,18 @@ extension AudioServer {
             return jsonResponse(ProcessedSessionResponse(result).json)
         }
 
-        // GET /registry/sessions
-        group.get("sessions") { _, _ in
-            let sessions = try await registry.sessions()
-            return jsonResponse(["sessions": sessions.map(SessionResponse.init).map(\.json)])
-        }
-
-        // GET /registry/sessions/:id
-        group.get("sessions/:id") { _, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            guard let session = try await registry.session(id: id) else {
-                return errorResponse("Session \(id) not found", status: .notFound)
-            }
-            let segments = try await registry.segmentsForSession(id: id)
-            return jsonResponse(SessionDetailResponse(session: session, segments: segments).json)
-        }
-
-        // GET /registry/sessions/:id/segments
-        group.get("sessions/:id/segments") { _, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            let segments = try await registry.segmentsForSession(id: id)
-            return jsonResponse(["segments": segments.map(SegmentResponse.init).map(\.json)])
-        }
-
         // MARK: Speakers
 
         // GET /registry/speakers
         group.get("speakers") { _, _ in
-            let speakers = try await registry.speakers()
+            let speakers = await registry.speakers()
             return jsonResponse(["speakers": speakers.map(SpeakerResponse.init).map(\.json)])
         }
 
         // GET /registry/speakers/:id
         group.get("speakers/:id") { _, context in
             let id = try requireInt64(context.parameters.get("id"))
-            guard let speaker = try await registry.speaker(id: id) else {
+            guard let speaker = await registry.speaker(id: id) else {
                 return errorResponse("Speaker \(id) not found", status: .notFound)
             }
             return jsonResponse(SpeakerResponse(speaker).json)
@@ -90,7 +66,7 @@ extension AudioServer {
                 try await registry.updateNotes(speakerId: id, notes: notes)
             }
 
-            guard let speaker = try await registry.speaker(id: id) else {
+            guard let speaker = await registry.speaker(id: id) else {
                 return errorResponse("Speaker \(id) not found", status: .notFound)
             }
             return jsonResponse(SpeakerResponse(speaker).json)
@@ -106,7 +82,7 @@ extension AudioServer {
                 return errorResponse("Body must include integer 'src' and 'dst'", status: .badRequest)
             }
             try await registry.merge(src: src, into: dst)
-            guard let speaker = try await registry.speaker(id: dst) else {
+            guard let speaker = await registry.speaker(id: dst) else {
                 return errorResponse("Speaker \(dst) not found after merge", status: .internalServerError)
             }
             return jsonResponse(SpeakerResponse(speaker).json)
@@ -118,18 +94,9 @@ extension AudioServer {
             try await registry.deleteSpeaker(id: id)
             return Response(status: .noContent)
         }
-
-        // GET /registry/speakers/:id/segments
-        group.get("speakers/:id/segments") { _, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            let segments = try await registry.segments(for: id)
-            return jsonResponse(["segments": segments.map(SegmentResponse.init).map(\.json)])
-        }
     }
 
     private func openOrCreateRegistry() -> SpeakerRegistry {
-        // SpeakerRegistry.open is throwing — propagate as a fatal since it's a startup concern.
-        // In production you'd inject this via ModelState.
         guard let reg = try? SpeakerRegistry.open() else {
             fatalError("Failed to open speaker registry at default path")
         }
@@ -146,8 +113,6 @@ private struct ProcessedSessionResponse {
 
     var json: [String: Any] {
         [
-            "session_id": result.session.id ?? -1,
-            "duration": result.session.durationSeconds,
             "num_speakers": result.numSpeakers,
             "segments": result.segments.map { seg -> [String: Any] in
                 var d: [String: Any] = [
@@ -177,53 +142,6 @@ private struct SpeakerResponse {
         ]
         if let name = speaker.displayName { d["display_name"] = name }
         if let notes = speaker.notes { d["notes"] = notes }
-        return d
-    }
-}
-
-private struct SessionResponse {
-    let session: SpeakerSession
-
-    init(_ session: SpeakerSession) { self.session = session }
-
-    var json: [String: Any] {
-        var d: [String: Any] = [
-            "id": session.id ?? -1,
-            "audio_path": session.audioPath,
-            "duration": session.durationSeconds,
-            "recorded_at": ISO8601DateFormatter().string(from: session.recordedAt),
-        ]
-        if let p = session.processedAt { d["processed_at"] = ISO8601DateFormatter().string(from: p) }
-        return d
-    }
-}
-
-private struct SessionDetailResponse {
-    let session: SpeakerSession
-    let segments: [SpeakerSegment]
-
-    var json: [String: Any] {
-        var d = SessionResponse(session).json
-        d["segments"] = segments.map(SegmentResponse.init).map(\.json)
-        return d
-    }
-}
-
-private struct SegmentResponse {
-    let segment: SpeakerSegment
-
-    init(_ segment: SpeakerSegment) { self.segment = segment }
-
-    var json: [String: Any] {
-        var d: [String: Any] = [
-            "id": segment.id ?? -1,
-            "session_id": segment.sessionId,
-            "speaker_id": segment.speakerId,
-            "start": segment.startTime,
-            "end": segment.endTime,
-            "duration": segment.duration,
-        ]
-        if let t = segment.transcriptText { d["transcript"] = t }
         return d
     }
 }
@@ -277,10 +195,8 @@ private func extractMultipartField(named name: String, from data: Data, boundary
 
         if headers.contains("name=\"\(name)\"") || headers.contains("name=\"\(name)\"") {
             let bodyStart = headerEnd.upperBound
-            // Find the next boundary to determine where this field's body ends
             if let nextBoundary = data.range(of: boundaryData, in: bodyStart..<data.endIndex) {
                 let bodyEnd = nextBoundary.lowerBound
-                // Strip trailing CRLF before boundary
                 let trimEnd = data[bodyStart..<bodyEnd].hasSuffix(crlf)
                     ? data.index(bodyEnd, offsetBy: -crlf.count)
                     : bodyEnd
