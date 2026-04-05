@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import HummingbirdCore
 import HummingbirdWebSocket
+import Logging
 import NIOCore
 import Qwen3ASR
 import Qwen3TTS
@@ -58,7 +59,7 @@ public struct AudioServer {
         let state = self.state
 
         if logRequests {
-            router.add(middleware: LogRequestsMiddleware(.info))
+            router.add(middleware: TimedRequestLogger<BasicRequestContext>(logLevel: .info))
         }
 
         addRegistryRoutes(to: router)
@@ -256,6 +257,30 @@ final class ModelState: @unchecked Sendable {
 
 private func logProgress(_ progress: Double, _ status: String) {
     print("  [\(Int(progress * 100))%] \(status)")
+}
+
+// MARK: - Request Logging Middleware
+
+/// Logs method, path, status code, and elapsed time after each response.
+struct TimedRequestLogger<Context: RequestContext>: RouterMiddleware {
+    let logLevel: Logger.Level
+
+    func handle(
+        _ request: Request,
+        context: Context,
+        next: (Request, Context) async throws -> Response
+    ) async throws -> Response {
+        let start = ContinuousClock.now
+        let response = try await next(request, context)
+        let elapsed = ContinuousClock.now - start
+        let ms = Int(Double(elapsed.components.seconds) * 1000
+                     + Double(elapsed.components.attoseconds) / 1e15)
+        context.logger.log(
+            level: logLevel,
+            "\(request.method.rawValue) \(request.uri.path) \(response.status.code) (\(ms)ms)"
+        )
+        return response
+    }
 }
 
 // MARK: - OpenAI Realtime API Handler
