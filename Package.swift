@@ -227,6 +227,7 @@ let package = Package(
                 "CosyVoiceTTS",
                 "PersonaPlex",
                 "SpeechEnhancement",
+                "SpeakerRegistry",
                 "AudioCommon",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket")

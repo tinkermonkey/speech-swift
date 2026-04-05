@@ -8,6 +8,7 @@ import Qwen3TTS
 import CosyVoiceTTS
 import PersonaPlex
 import SpeechEnhancement
+import SpeechVAD
 import AudioCommon
 
 // MARK: - Server
@@ -53,6 +54,8 @@ public struct AudioServer {
     func buildRouter() -> Router<BasicRequestContext> {
         let router = Router()
         let state = self.state
+
+        addRegistryRoutes(to: router)
 
         router.get("/health") { _, _ in
             Response(
@@ -185,6 +188,7 @@ final class ModelState: @unchecked Sendable {
     private var cosyvoice: CosyVoiceTTSModel?
     private var personaplex: PersonaPlexModel?
     private var enhancer: SpeechEnhancer?
+    private var diarizer: DiarizationPipeline?
     var spmDecoder: SentencePieceDecoder?
 
     func loadASR() async throws -> Qwen3ASRModel {
@@ -232,6 +236,14 @@ final class ModelState: @unchecked Sendable {
         print("[server] Loading DeepFilterNet3...")
         let m = try await SpeechEnhancer.fromPretrained(progressHandler: logProgress)
         enhancer = m
+        return m
+    }
+
+    func loadDiarizer() async throws -> DiarizationPipeline {
+        if let m = diarizer { return m }
+        print("[server] Loading diarization pipeline...")
+        let m = try await DiarizationPipeline.fromPretrained(progressHandler: logProgress)
+        diarizer = m
         return m
     }
 }

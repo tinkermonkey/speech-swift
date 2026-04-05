@@ -1,0 +1,299 @@
+import Foundation
+import Hummingbird
+import NIOCore
+import AudioCommon
+import SpeechVAD
+import SpeakerRegistry
+
+// MARK: - Registry Route Registration
+
+extension AudioServer {
+    /// Attach all /registry/* routes to the router.
+    func addRegistryRoutes(to router: Router<BasicRequestContext>) {
+        let registry = openOrCreateRegistry()
+
+        let group = router.group("registry")
+
+        // MARK: Sessions
+
+        // POST /registry/sessions
+        // Body: raw WAV bytes or multipart with a "file" field (same shape as /v1/audio/transcriptions).
+        // Returns: ProcessedSessionResponse
+        group.post("sessions") { request, _ in
+            let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
+            let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
+
+            let tmpURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".wav")
+            defer { try? FileManager.default.removeItem(at: tmpURL) }
+            try Data(buffer: audioData).write(to: tmpURL)
+
+            let audio = try AudioFileLoader.load(url: tmpURL, targetSampleRate: 16000)
+            let diarizer = try await self.state.loadDiarizer()
+            let pipeline = PipelineSession(diarizer: diarizer, registry: registry)
+            let result = try await pipeline.process(audioURL: tmpURL, audio: audio)
+
+            return jsonResponse(ProcessedSessionResponse(result).json)
+        }
+
+        // GET /registry/sessions
+        group.get("sessions") { _, _ in
+            let sessions = try await registry.sessions()
+            return jsonResponse(["sessions": sessions.map(SessionResponse.init).map(\.json)])
+        }
+
+        // GET /registry/sessions/:id
+        group.get("sessions/:id") { _, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            guard let session = try await registry.session(id: id) else {
+                return errorResponse("Session \(id) not found", status: .notFound)
+            }
+            let segments = try await registry.segmentsForSession(id: id)
+            return jsonResponse(SessionDetailResponse(session: session, segments: segments).json)
+        }
+
+        // GET /registry/sessions/:id/segments
+        group.get("sessions/:id/segments") { _, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            let segments = try await registry.segmentsForSession(id: id)
+            return jsonResponse(["segments": segments.map(SegmentResponse.init).map(\.json)])
+        }
+
+        // MARK: Speakers
+
+        // GET /registry/speakers
+        group.get("speakers") { _, _ in
+            let speakers = try await registry.speakers()
+            return jsonResponse(["speakers": speakers.map(SpeakerResponse.init).map(\.json)])
+        }
+
+        // GET /registry/speakers/:id
+        group.get("speakers/:id") { _, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            guard let speaker = try await registry.speaker(id: id) else {
+                return errorResponse("Speaker \(id) not found", status: .notFound)
+            }
+            return jsonResponse(SpeakerResponse(speaker).json)
+        }
+
+        // PATCH /registry/speakers/:id
+        // Body: { "displayName": "Alice", "notes": "..." }
+        group.patch("speakers/:id") { request, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            let body = try await request.body.collect(upTo: 64 * 1024)
+            let json = try requireJSON(body)
+
+            if let name = json["displayName"] as? String {
+                try await registry.label(speakerId: id, displayName: name)
+            }
+            if let notes = json["notes"] as? String {
+                try await registry.updateNotes(speakerId: id, notes: notes)
+            }
+
+            guard let speaker = try await registry.speaker(id: id) else {
+                return errorResponse("Speaker \(id) not found", status: .notFound)
+            }
+            return jsonResponse(SpeakerResponse(speaker).json)
+        }
+
+        // POST /registry/speakers/merge
+        // Body: { "src": 3, "dst": 7 }
+        group.post("speakers/merge") { request, _ in
+            let body = try await request.body.collect(upTo: 64 * 1024)
+            let json = try requireJSON(body)
+            guard let src = (json["src"] as? Int).map(Int64.init),
+                  let dst = (json["dst"] as? Int).map(Int64.init) else {
+                return errorResponse("Body must include integer 'src' and 'dst'", status: .badRequest)
+            }
+            try await registry.merge(src: src, into: dst)
+            guard let speaker = try await registry.speaker(id: dst) else {
+                return errorResponse("Speaker \(dst) not found after merge", status: .internalServerError)
+            }
+            return jsonResponse(SpeakerResponse(speaker).json)
+        }
+
+        // DELETE /registry/speakers/:id
+        group.delete("speakers/:id") { _, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            try await registry.deleteSpeaker(id: id)
+            return Response(status: .noContent)
+        }
+
+        // GET /registry/speakers/:id/segments
+        group.get("speakers/:id/segments") { _, context in
+            let id = try requireInt64(context.parameters.get("id"))
+            let segments = try await registry.segments(for: id)
+            return jsonResponse(["segments": segments.map(SegmentResponse.init).map(\.json)])
+        }
+    }
+
+    private func openOrCreateRegistry() -> SpeakerRegistry {
+        // SpeakerRegistry.open is throwing — propagate as a fatal since it's a startup concern.
+        // In production you'd inject this via ModelState.
+        guard let reg = try? SpeakerRegistry.open() else {
+            fatalError("Failed to open speaker registry at default path")
+        }
+        return reg
+    }
+}
+
+// MARK: - Response Types
+
+private struct ProcessedSessionResponse {
+    let result: ProcessedSession
+
+    init(_ result: ProcessedSession) { self.result = result }
+
+    var json: [String: Any] {
+        [
+            "session_id": result.session.id ?? -1,
+            "duration": result.session.durationSeconds,
+            "num_speakers": result.numSpeakers,
+            "segments": result.segments.map { seg -> [String: Any] in
+                var d: [String: Any] = [
+                    "speaker_id": seg.speaker.id ?? -1,
+                    "speaker_label": seg.speaker.label,
+                    "start": seg.startTime,
+                    "end": seg.endTime,
+                    "duration": seg.duration,
+                ]
+                if let t = seg.transcriptText { d["transcript"] = t }
+                return d
+            },
+        ]
+    }
+}
+
+private struct SpeakerResponse {
+    let speaker: Speaker
+
+    init(_ speaker: Speaker) { self.speaker = speaker }
+
+    var json: [String: Any] {
+        var d: [String: Any] = [
+            "id": speaker.id ?? -1,
+            "label": speaker.label,
+            "is_labeled": speaker.isLabeled,
+        ]
+        if let name = speaker.displayName { d["display_name"] = name }
+        if let notes = speaker.notes { d["notes"] = notes }
+        return d
+    }
+}
+
+private struct SessionResponse {
+    let session: SpeakerSession
+
+    init(_ session: SpeakerSession) { self.session = session }
+
+    var json: [String: Any] {
+        var d: [String: Any] = [
+            "id": session.id ?? -1,
+            "audio_path": session.audioPath,
+            "duration": session.durationSeconds,
+            "recorded_at": ISO8601DateFormatter().string(from: session.recordedAt),
+        ]
+        if let p = session.processedAt { d["processed_at"] = ISO8601DateFormatter().string(from: p) }
+        return d
+    }
+}
+
+private struct SessionDetailResponse {
+    let session: SpeakerSession
+    let segments: [SpeakerSegment]
+
+    var json: [String: Any] {
+        var d = SessionResponse(session).json
+        d["segments"] = segments.map(SegmentResponse.init).map(\.json)
+        return d
+    }
+}
+
+private struct SegmentResponse {
+    let segment: SpeakerSegment
+
+    init(_ segment: SpeakerSegment) { self.segment = segment }
+
+    var json: [String: Any] {
+        var d: [String: Any] = [
+            "id": segment.id ?? -1,
+            "session_id": segment.sessionId,
+            "speaker_id": segment.speakerId,
+            "start": segment.startTime,
+            "end": segment.endTime,
+            "duration": segment.duration,
+        ]
+        if let t = segment.transcriptText { d["transcript"] = t }
+        return d
+    }
+}
+
+// MARK: - Request Helpers
+
+private func requireInt64(_ string: String?) throws -> Int64 {
+    guard let s = string, let id = Int64(s) else {
+        throw HTTPError(.badRequest, message: "Invalid or missing id parameter")
+    }
+    return id
+}
+
+private func requireJSON(_ buffer: ByteBuffer) throws -> [String: Any] {
+    let data = Data(buffer: buffer)
+    guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw HTTPError(.badRequest, message: "Request body must be valid JSON")
+    }
+    return json
+}
+
+/// Extract audio bytes from either a raw WAV body or a multipart/form-data "file" field.
+private func extractAudioData(from buffer: ByteBuffer, contentType: String?) throws -> ByteBuffer {
+    let ct = contentType ?? ""
+    if ct.contains("multipart/form-data") {
+        guard let boundary = ct.components(separatedBy: "boundary=").last else {
+            throw HTTPError(.badRequest, message: "Missing multipart boundary")
+        }
+        let data = Data(buffer: buffer)
+        if let extracted = extractMultipartField(named: "file", from: data, boundary: boundary) {
+            return ByteBuffer(data: extracted)
+        }
+        throw HTTPError(.badRequest, message: "No 'file' field found in multipart body")
+    }
+    // Assume raw WAV bytes
+    return buffer
+}
+
+/// Minimal multipart parser — extracts the body bytes of the named field.
+private func extractMultipartField(named name: String, from data: Data, boundary: String) -> Data? {
+    guard let boundaryData = "--\(boundary)".data(using: .utf8),
+          let crlf = "\r\n".data(using: .utf8),
+          let doubleCRLF = "\r\n\r\n".data(using: .utf8) else { return nil }
+
+    var searchRange = data.startIndex..<data.endIndex
+    while let boundaryRange = data.range(of: boundaryData, in: searchRange) {
+        let headerStart = boundaryRange.upperBound
+        guard let headerEnd = data.range(of: doubleCRLF, in: headerStart..<data.endIndex) else { break }
+        let headerData = data[headerStart..<headerEnd.lowerBound]
+        let headers = String(data: headerData, encoding: .utf8) ?? ""
+
+        if headers.contains("name=\"\(name)\"") || headers.contains("name=\"\(name)\"") {
+            let bodyStart = headerEnd.upperBound
+            // Find the next boundary to determine where this field's body ends
+            if let nextBoundary = data.range(of: boundaryData, in: bodyStart..<data.endIndex) {
+                let bodyEnd = nextBoundary.lowerBound
+                // Strip trailing CRLF before boundary
+                let trimEnd = data[bodyStart..<bodyEnd].hasSuffix(crlf)
+                    ? data.index(bodyEnd, offsetBy: -crlf.count)
+                    : bodyEnd
+                return data[bodyStart..<trimEnd]
+            }
+        }
+        searchRange = boundaryRange.upperBound..<data.endIndex
+    }
+    return nil
+}
+
+private extension Data {
+    func hasSuffix(_ suffix: Data) -> Bool {
+        count >= suffix.count && self[(count - suffix.count)...] == suffix
+    }
+}

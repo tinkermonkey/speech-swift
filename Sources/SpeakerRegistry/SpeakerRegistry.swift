@@ -151,6 +151,40 @@ public actor SpeakerRegistry {
         try db.read { db in try Speaker.fetchOne(db, key: id) }
     }
 
+    public func sessions() throws -> [SpeakerSession] {
+        try db.read { db in
+            try SpeakerSession.order(Column("recordedAt").desc).fetchAll(db)
+        }
+    }
+
+    public func session(id: Int64) throws -> SpeakerSession? {
+        try db.read { db in try SpeakerSession.fetchOne(db, key: id) }
+    }
+
+    public func segmentsForSession(id: Int64) throws -> [SpeakerSegment] {
+        try db.read { db in
+            try SpeakerSegment
+                .filter(Column("sessionId") == id)
+                .order(Column("startTime"))
+                .fetchAll(db)
+        }
+    }
+
+    public func updateNotes(speakerId: Int64, notes: String) throws {
+        try db.write { db in
+            try db.execute(
+                sql: "UPDATE speaker SET notes = ? WHERE id = ?",
+                arguments: [notes, speakerId])
+        }
+    }
+
+    public func deleteSpeaker(id: Int64) throws {
+        try db.write { db in
+            try db.execute(sql: "DELETE FROM speaker WHERE id = ?", arguments: [id])
+        }
+        AudioLog.pipeline.info("Deleted speaker \(id)")
+    }
+
     // MARK: - Private Helpers
 
     private func bestMatch(embedding: [Float]) throws -> (Speaker, Float)? {
