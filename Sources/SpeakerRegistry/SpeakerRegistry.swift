@@ -203,7 +203,10 @@ public actor SpeakerRegistry {
 
     private func mintPlaceholder() throws -> Speaker {
         var speaker = Speaker()
-        try db.write { db in try speaker.insert(db) }
+        try db.write { db in
+            try speaker.insert(db)
+            speaker.id = db.lastInsertedRowID
+        }
         return speaker
     }
 
