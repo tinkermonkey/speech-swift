@@ -3,6 +3,7 @@ import ArgumentParser
 import AudioCommon
 import SpeechVAD
 import SpeakerRegistry
+import Qwen3ASR
 
 // MARK: - audio session
 
@@ -37,6 +38,9 @@ extension SessionCommand {
         @Option(name: .long, help: "Registry file path (default: ~/Library/Caches/qwen3-speech/speaker-registry.json)")
         public var registryPath: String?
 
+        @Flag(name: .long, help: "Transcribe each segment using Qwen3-ASR")
+        public var transcribe: Bool = false
+
         @Flag(name: .long, help: "Output as JSON")
         public var json: Bool = false
 
@@ -66,7 +70,13 @@ extension SessionCommand {
                     at: registryURL,
                     similarityThreshold: threshold)
 
-                let pipeline = PipelineSession(diarizer: diarizer, registry: registry)
+                var asrModel: (any SpeechRecognitionModel)? = nil
+                if transcribe {
+                    print("Loading ASR model...")
+                    asrModel = try await Qwen3ASRModel.fromPretrained(progressHandler: reportProgress)
+                }
+
+                let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asrModel)
 
                 print("Processing...")
                 let start = Date()
@@ -89,7 +99,11 @@ extension SessionCommand {
                     let s = String(format: "%.2f", seg.startTime)
                     let e = String(format: "%.2f", seg.endTime)
                     let d = String(format: "%.2f", seg.duration)
-                    print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)")
+                    if let text = seg.transcriptText {
+                        print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)\n  \(text)")
+                    } else {
+                        print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)")
+                    }
                 }
                 print("\n--- \(result.numSpeakers) speaker(s) ---")
             }
@@ -99,13 +113,15 @@ extension SessionCommand {
         private func printJSON(_ result: ProcessedSession) {
             var items: [[String: Any]] = []
             for seg in result.segments {
-                items.append([
+                var d: [String: Any] = [
                     "speaker_id": seg.speaker.id ?? -1,
                     "speaker_label": seg.speaker.label,
                     "start": Double(String(format: "%.3f", seg.startTime))!,
                     "end": Double(String(format: "%.3f", seg.endTime))!,
                     "duration": Double(String(format: "%.3f", seg.duration))!,
-                ])
+                ]
+                if let text = seg.transcriptText { d["transcript"] = text }
+                items.append(d)
             }
             let output: [String: Any] = [
                 "num_speakers": result.numSpeakers,

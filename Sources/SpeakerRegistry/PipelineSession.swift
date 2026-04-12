@@ -26,38 +26,51 @@ public struct AnnotatedSegment: Sendable {
 
 // MARK: - PipelineSession
 
-/// Ties together `DiarizationPipeline` and `SpeakerRegistry` for a single audio file.
+/// Ties together `DiarizationPipeline`, `SpeakerRegistry`, and an optional ASR model
+/// for a single audio file.
 ///
 /// Typical usage:
 /// ```swift
 /// let registry = try SpeakerRegistry.open()
 /// let diarizer = try await DiarizationPipeline.fromPretrained()
-/// let ps = PipelineSession(diarizer: diarizer, registry: registry)
+/// let asr = try await Qwen3ASRModel.fromPretrained()
+/// let ps = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
 /// let result = try await ps.process(audioURL: url, audio: samples)
 /// ```
 public struct PipelineSession: Sendable {
 
     public let diarizer: DiarizationPipeline
     public let registry: SpeakerRegistry
+    /// Optional ASR model. When provided, each segment is transcribed and
+    /// `AnnotatedSegment.transcriptText` is populated.
+    public let asr: (any SpeechRecognitionModel)?
 
-    public init(diarizer: DiarizationPipeline, registry: SpeakerRegistry) {
+    public init(
+        diarizer: DiarizationPipeline,
+        registry: SpeakerRegistry,
+        asr: (any SpeechRecognitionModel)? = nil
+    ) {
         self.diarizer = diarizer
         self.registry = registry
+        self.asr = asr
     }
 
     // MARK: - Process
 
-    /// Diarize `audio` and resolve each speaker cluster against the registry.
+    /// Diarize `audio`, resolve each speaker cluster against the registry, and
+    /// optionally transcribe each segment with the injected ASR model.
     ///
     /// - Parameters:
     ///   - audioURL: Source file path (used for log messages).
     ///   - audio: Float32 PCM at 16 kHz.
     ///   - config: Diarization hyper-parameters.
-    /// - Returns: A `ProcessedSession` with registry-resolved speaker identities.
+    /// - Returns: A `ProcessedSession` with registry-resolved speaker identities
+    ///   and, if an ASR model was provided, per-segment transcripts.
     public func process(
         audioURL: URL,
         audio: [Float],
-        config: DiarizationConfig = .default
+        config: DiarizationConfig = .default,
+        threshold: Float? = nil
     ) async throws -> ProcessedSession {
         let sampleRate = 16000
         let durationSeconds = Double(audio.count) / Double(sampleRate)
@@ -71,22 +84,33 @@ public struct PipelineSession: Sendable {
             let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
             let bestQuality = speakerSegs.map(\.duration).max().map(Double.init) ?? 0.0
 
-            let speaker = try await registry.resolve(embedding: embedding, qualityScore: bestQuality)
+            let speaker = try await registry.resolve(embedding: embedding, qualityScore: bestQuality, threshold: threshold)
             localToRegistry[localId] = speaker
         }
 
-        // Build annotated output
+        // Build annotated output, slicing audio per segment for ASR if available
         var annotated: [AnnotatedSegment] = []
         for seg in diarResult.segments {
             guard let speaker = localToRegistry[seg.speakerId] else { continue }
+            let start = Double(seg.startTime)
+            let end = Double(seg.endTime)
+
+            let transcript = asr.map { model in
+                let startSample = Int(start * Double(sampleRate))
+                let endSample = min(Int(end * Double(sampleRate)), audio.count)
+                let slice = Array(audio[startSample..<endSample])
+                return model.transcribe(audio: slice, sampleRate: sampleRate, language: nil)
+            }
+
             annotated.append(AnnotatedSegment(
                 speaker: speaker,
-                startTime: Double(seg.startTime),
-                endTime: Double(seg.endTime),
-                transcriptText: nil))
+                startTime: start,
+                endTime: end,
+                transcriptText: transcript))
         }
 
-        AudioLog.pipeline.info("Resolved \(localToRegistry.count) speaker(s) from \(audioURL.lastPathComponent)")
+        let asrNote = asr != nil ? " with transcription" : ""
+        AudioLog.pipeline.info("Resolved \(localToRegistry.count) speaker(s) from \(audioURL.lastPathComponent)\(asrNote)")
         return ProcessedSession(segments: annotated)
     }
 }

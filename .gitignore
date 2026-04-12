@@ -45,9 +45,9 @@ Frameworks/
 # Built app bundles
 *.app/
 
-# Benchmark data (downloaded at runtime)
-benchmarks/
-!docs/benchmarks/
+# Benchmark datasets and result files (downloaded/generated at runtime)
+benchmarks/data/
+benchmarks/results/*.json
 .claude/worktrees/
 *.xcodeproj/project.pbxproj
 .DS_Store

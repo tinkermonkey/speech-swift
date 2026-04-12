@@ -15,10 +15,13 @@ extension AudioServer {
 
         // MARK: Sessions
 
-        // POST /registry/sessions
+        // POST /registry/sessions[?threshold=0.65]
         // Body: raw WAV bytes or multipart/form-data with a "file" field.
         // Diarizes the audio, resolves speakers against the registry, and returns the result.
+        // Optional query param `threshold` overrides the registry's default similarity threshold.
         group.post("sessions") { request, _ in
+            let threshold = request.uri.queryParameters.get("threshold").flatMap(Float.init)
+
             let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
             let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
 
@@ -29,8 +32,9 @@ extension AudioServer {
 
             let audio = try AudioFileLoader.load(url: tmpURL, targetSampleRate: 16000)
             let diarizer = try await self.state.loadDiarizer()
-            let pipeline = PipelineSession(diarizer: diarizer, registry: registry)
-            let result = try await pipeline.process(audioURL: tmpURL, audio: audio)
+            let asr = try await self.state.loadASR()
+            let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
+            let result = try await pipeline.process(audioURL: tmpURL, audio: audio, threshold: threshold)
 
             return jsonResponse(ProcessedSessionResponse(result).json)
         }
@@ -88,6 +92,13 @@ extension AudioServer {
             return jsonResponse(SpeakerResponse(speaker).json)
         }
 
+        // DELETE /registry/speakers
+        // Wipes all speakers and centroids, resetting the registry to empty.
+        group.delete("speakers") { _, _ in
+            try await registry.reset()
+            return Response(status: .noContent)
+        }
+
         // DELETE /registry/speakers/:id
         group.delete("speakers/:id") { _, context in
             let id = try requireInt64(context.parameters.get("id"))
@@ -97,7 +108,7 @@ extension AudioServer {
     }
 
     private func openOrCreateRegistry() -> SpeakerRegistry {
-        guard let reg = try? SpeakerRegistry.open() else {
+        guard let reg = try? SpeakerRegistry.open(similarityThreshold: 0.75) else {
             fatalError("Failed to open speaker registry at default path")
         }
         return reg

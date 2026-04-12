@@ -33,7 +33,7 @@ public actor SpeakerRegistry {
     ///   - similarityThreshold: Minimum cosine similarity to count as a match (default 0.75).
     public static func open(
         at url: URL = .defaultRegistryURL,
-        similarityThreshold: Float = 0.75
+        similarityThreshold: Float = 0.75  // empirically optimal on VoxConverse (sweep 2026-04-12)
     ) throws -> SpeakerRegistry {
         let store: RegistryStore
         if FileManager.default.fileExists(atPath: url.path) {
@@ -64,10 +64,11 @@ public actor SpeakerRegistry {
     ///   - embedding: 256-dim L2-normalised WeSpeaker embedding.
     ///   - qualityScore: Segment duration in seconds.
     /// - Returns: The matched or newly created `Speaker`.
-    public func resolve(embedding: [Float], qualityScore: Double) throws -> Speaker {
+    public func resolve(embedding: [Float], qualityScore: Double, threshold: Float? = nil) throws -> Speaker {
         let isHighQuality = qualityScore >= 2.0
+        let effectiveThreshold = threshold ?? similarityThreshold
 
-        if let (speaker, similarity) = bestMatch(embedding: embedding) {
+        if let (speaker, similarity) = bestMatch(embedding: embedding, threshold: effectiveThreshold) {
             AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(similarity, format: .fixed(precision: 3)))")
             if isHighQuality {
                 updateCentroid(speakerId: speaker.id!, with: embedding)
@@ -137,13 +138,20 @@ public actor SpeakerRegistry {
         AudioLog.pipeline.info("Deleted speaker \(id)")
     }
 
+    /// Wipe all speakers, centroids, and reset the ID counter to 1.
+    public func reset() throws {
+        store = RegistryStore()
+        try save()
+        AudioLog.pipeline.info("Registry reset: all speakers and centroids cleared")
+    }
+
     // MARK: - Private Helpers
 
-    private func bestMatch(embedding: [Float]) -> (Speaker, Float)? {
+    private func bestMatch(embedding: [Float], threshold: Float) -> (Speaker, Float)? {
         var best: (Int64, Float)?
         for c in store.centroids {
             let sim = cosineSimilarity(embedding, c.centroid)
-            if sim > similarityThreshold, sim > (best?.1 ?? 0) {
+            if sim > threshold, sim > (best?.1 ?? 0) {
                 best = (c.speakerId, sim)
             }
         }
