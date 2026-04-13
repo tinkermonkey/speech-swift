@@ -15,28 +15,41 @@ extension AudioServer {
 
         // MARK: Sessions
 
-        // POST /registry/sessions[?threshold=0.65]
+        // POST /registry/sessions[?threshold=0.65][&min_duration=10.0]
         // Body: raw WAV bytes or multipart/form-data with a "file" field.
         // Diarizes the audio, resolves speakers against the registry, and returns the result.
-        // Optional query param `threshold` overrides the registry's default similarity threshold.
-        group.post("sessions") { request, _ in
+        //
+        // Query params:
+        //   threshold    – cosine similarity override (default: registry default, 0.75)
+        //   min_duration – clips shorter than this (seconds) skip speaker recognition entirely;
+        //                  ASR still runs. Default: 10.0 s. Set to 0 to disable the guard.
+        group.post("sessions") { request, context in
             let threshold = request.uri.queryParameters.get("threshold").flatMap(Float.init)
+            let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 10.0
+            do {
+                let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
+                let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
 
-            let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
-            let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
+                let tmpURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString + ".wav")
+                defer { try? FileManager.default.removeItem(at: tmpURL) }
+                try Data(buffer: audioData).write(to: tmpURL)
 
-            let tmpURL = FileManager.default.temporaryDirectory
-                .appendingPathComponent(UUID().uuidString + ".wav")
-            defer { try? FileManager.default.removeItem(at: tmpURL) }
-            try Data(buffer: audioData).write(to: tmpURL)
+                let audio = try AudioFileLoader.load(url: tmpURL, targetSampleRate: 16000)
+                let diarizer = try await self.state.loadDiarizer()
+                let asr = try await self.state.loadASR()
+                let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
+                let result = try await pipeline.process(
+                    audioURL: tmpURL,
+                    audio: audio,
+                    threshold: threshold,
+                    minimumDurationForRecognition: minDuration)
 
-            let audio = try AudioFileLoader.load(url: tmpURL, targetSampleRate: 16000)
-            let diarizer = try await self.state.loadDiarizer()
-            let asr = try await self.state.loadASR()
-            let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
-            let result = try await pipeline.process(audioURL: tmpURL, audio: audio, threshold: threshold)
-
-            return jsonResponse(ProcessedSessionResponse(result).json)
+                return jsonResponse(ProcessedSessionResponse(result).json)
+            } catch {
+                context.logger.error("POST /registry/sessions error: \(error)")
+                throw error
+            }
         }
 
         // MARK: Speakers
@@ -49,69 +62,97 @@ extension AudioServer {
 
         // GET /registry/speakers/:id
         group.get("speakers/:id") { _, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            guard let speaker = await registry.speaker(id: id) else {
-                return errorResponse("Speaker \(id) not found", status: .notFound)
+            do {
+                let id = try requireInt64(context.parameters.get("id"))
+                guard let speaker = await registry.speaker(id: id) else {
+                    return errorResponse("Speaker \(id) not found", status: .notFound)
+                }
+                return jsonResponse(SpeakerResponse(speaker).json)
+            } catch {
+                context.logger.error("GET /registry/speakers/:id error: \(error)")
+                throw error
             }
-            return jsonResponse(SpeakerResponse(speaker).json)
         }
 
         // PATCH /registry/speakers/:id
         // Body: { "displayName": "Alice", "notes": "..." }
         group.patch("speakers/:id") { request, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            let body = try await request.body.collect(upTo: 64 * 1024)
-            let json = try requireJSON(body)
+            do {
+                let id = try requireInt64(context.parameters.get("id"))
+                let body = try await request.body.collect(upTo: 64 * 1024)
+                let json = try requireJSON(body)
 
-            if let name = json["displayName"] as? String {
-                try await registry.label(speakerId: id, displayName: name)
-            }
-            if let notes = json["notes"] as? String {
-                try await registry.updateNotes(speakerId: id, notes: notes)
-            }
+                if let name = json["displayName"] as? String {
+                    try await registry.label(speakerId: id, displayName: name)
+                }
+                if let notes = json["notes"] as? String {
+                    try await registry.updateNotes(speakerId: id, notes: notes)
+                }
 
-            guard let speaker = await registry.speaker(id: id) else {
-                return errorResponse("Speaker \(id) not found", status: .notFound)
+                guard let speaker = await registry.speaker(id: id) else {
+                    return errorResponse("Speaker \(id) not found", status: .notFound)
+                }
+                return jsonResponse(SpeakerResponse(speaker).json)
+            } catch let err as RegistryError {
+                context.logger.error("PATCH /registry/speakers/:id error: \(err)")
+                return errorResponse("\(err)", status: .notFound)
+            } catch {
+                context.logger.error("PATCH /registry/speakers/:id error: \(error)")
+                throw error
             }
-            return jsonResponse(SpeakerResponse(speaker).json)
         }
 
         // POST /registry/speakers/merge
         // Body: { "src": 3, "dst": 7 }
-        group.post("speakers/merge") { request, _ in
-            let body = try await request.body.collect(upTo: 64 * 1024)
-            let json = try requireJSON(body)
-            guard let src = (json["src"] as? Int).map(Int64.init),
-                  let dst = (json["dst"] as? Int).map(Int64.init) else {
-                return errorResponse("Body must include integer 'src' and 'dst'", status: .badRequest)
+        group.post("speakers/merge") { request, context in
+            do {
+                let body = try await request.body.collect(upTo: 64 * 1024)
+                let json = try requireJSON(body)
+                guard let src = (json["src"] as? Int).map(Int64.init),
+                      let dst = (json["dst"] as? Int).map(Int64.init) else {
+                    return errorResponse("Body must include integer 'src' and 'dst'", status: .badRequest)
+                }
+                try await registry.merge(src: src, into: dst)
+                guard let speaker = await registry.speaker(id: dst) else {
+                    return errorResponse("Speaker \(dst) not found after merge", status: .internalServerError)
+                }
+                return jsonResponse(SpeakerResponse(speaker).json)
+            } catch {
+                return errorResponse("\(error)", status: .internalServerError)
             }
-            try await registry.merge(src: src, into: dst)
-            guard let speaker = await registry.speaker(id: dst) else {
-                return errorResponse("Speaker \(dst) not found after merge", status: .internalServerError)
-            }
-            return jsonResponse(SpeakerResponse(speaker).json)
         }
 
         // DELETE /registry/speakers
         // Wipes all speakers and centroids, resetting the registry to empty.
-        group.delete("speakers") { _, _ in
-            try await registry.reset()
-            return Response(status: .noContent)
+        group.delete("speakers") { _, context in
+            do {
+                try await registry.reset()
+                return Response(status: .noContent)
+            } catch {
+                context.logger.error("DELETE /registry/speakers error: \(error)")
+                throw error
+            }
         }
 
         // DELETE /registry/speakers/:id
         group.delete("speakers/:id") { _, context in
-            let id = try requireInt64(context.parameters.get("id"))
-            try await registry.deleteSpeaker(id: id)
-            return Response(status: .noContent)
+            do {
+                let id = try requireInt64(context.parameters.get("id"))
+                try await registry.deleteSpeaker(id: id)
+                return Response(status: .noContent)
+            } catch {
+                context.logger.error("DELETE /registry/speakers/:id error: \(error)")
+                throw error
+            }
         }
     }
 
     private func openOrCreateRegistry() -> SpeakerRegistry {
-        guard let reg = try? SpeakerRegistry.open(similarityThreshold: 0.75) else {
-            fatalError("Failed to open speaker registry at default path")
+        do {
+            return try SpeakerRegistry.open(similarityThreshold: 0.75)
+        } catch {
+            fatalError("Failed to open speaker registry at default path: \(error)")
         }
-        return reg
     }
 }
 
@@ -127,8 +168,8 @@ private struct ProcessedSessionResponse {
             "num_speakers": result.numSpeakers,
             "segments": result.segments.map { seg -> [String: Any] in
                 var d: [String: Any] = [
-                    "speaker_id": seg.speaker.id ?? -1,
-                    "speaker_label": seg.speaker.label,
+                    "speaker_id": seg.speaker.flatMap(\.id).map { $0 as Any } ?? NSNull(),
+                    "speaker_label": seg.speaker.map { $0.label as Any } ?? NSNull(),
                     "start": seg.startTime,
                     "end": seg.endTime,
                     "duration": seg.duration,
@@ -204,7 +245,7 @@ private func extractMultipartField(named name: String, from data: Data, boundary
         let headerData = data[headerStart..<headerEnd.lowerBound]
         let headers = String(data: headerData, encoding: .utf8) ?? ""
 
-        if headers.contains("name=\"\(name)\"") || headers.contains("name=\"\(name)\"") {
+        if headers.contains("name=\"\(name)\"") || headers.contains("name='\(name)'") {
             let bodyStart = headerEnd.upperBound
             if let nextBoundary = data.range(of: boundaryData, in: bodyStart..<data.endIndex) {
                 let bodyEnd = nextBoundary.lowerBound

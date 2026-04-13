@@ -38,6 +38,9 @@ extension SessionCommand {
         @Option(name: .long, help: "Registry file path (default: ~/Library/Caches/qwen3-speech/speaker-registry.json)")
         public var registryPath: String?
 
+        @Option(name: .long, help: "Minimum clip duration in seconds for speaker recognition (default 10.0). Clips shorter than this get ASR only.")
+        public var minDuration: Double = 10.0
+
         @Flag(name: .long, help: "Transcribe each segment using Qwen3-ASR")
         public var transcribe: Bool = false
 
@@ -80,7 +83,7 @@ extension SessionCommand {
 
                 print("Processing...")
                 let start = Date()
-                let result = try await pipeline.process(audioURL: url, audio: audio)
+                let result = try await pipeline.process(audioURL: url, audio: audio, minimumDurationForRecognition: minDuration)
                 let elapsed = Date().timeIntervalSince(start)
 
                 if json {
@@ -99,10 +102,11 @@ extension SessionCommand {
                     let s = String(format: "%.2f", seg.startTime)
                     let e = String(format: "%.2f", seg.endTime)
                     let d = String(format: "%.2f", seg.duration)
+                    let label = seg.speaker?.label ?? "Unknown"
                     if let text = seg.transcriptText {
-                        print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)\n  \(text)")
+                        print("\(label): [\(s)s - \(e)s] (\(d)s)\n  \(text)")
                     } else {
-                        print("\(seg.speaker.label): [\(s)s - \(e)s] (\(d)s)")
+                        print("\(label): [\(s)s - \(e)s] (\(d)s)")
                     }
                 }
                 print("\n--- \(result.numSpeakers) speaker(s) ---")
@@ -114,8 +118,8 @@ extension SessionCommand {
             var items: [[String: Any]] = []
             for seg in result.segments {
                 var d: [String: Any] = [
-                    "speaker_id": seg.speaker.id ?? -1,
-                    "speaker_label": seg.speaker.label,
+                    "speaker_id": seg.speaker?.id as Any,
+                    "speaker_label": seg.speaker?.label as Any,
                     "start": Double(String(format: "%.3f", seg.startTime))!,
                     "end": Double(String(format: "%.3f", seg.endTime))!,
                     "duration": Double(String(format: "%.3f", seg.duration))!,
