@@ -306,7 +306,7 @@ public extension Qwen3ASRModel {
         modelId: String = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit",
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> Qwen3ASRModel {
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         // Auto-detect model size and quantization bits from model ID
         let modelSize = ASRModelSize.detect(from: modelId)
@@ -322,7 +322,7 @@ public extension Qwen3ASRModel {
             to: cacheDir,
             additionalFiles: ["vocab.json", "merges.txt", "tokenizer_config.json"],
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading weights...")
+                progressHandler?(progress * 0.8, "Loading weights...")
             }
         )
 

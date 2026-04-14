@@ -101,7 +101,7 @@ public final class WeSpeakerModel {
     ) async throws -> WeSpeakerModel {
         let resolvedModelId = modelId ?? (engine == .coreml ? defaultCoreMLModelId : defaultModelId)
 
-        progressHandler?(0.0, "Downloading speaker embedding model...")
+        progressHandler?(0.0, "Loading speaker embedding model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: resolvedModelId)
 
@@ -111,7 +111,7 @@ public final class WeSpeakerModel {
                 modelId: resolvedModelId,
                 to: cacheDir,
                 progressHandler: { progress in
-                    progressHandler?(progress * 0.8, "Downloading weights...")
+                    progressHandler?(progress * 0.8, "Loading weights...")
                 }
             )
 
@@ -130,7 +130,7 @@ public final class WeSpeakerModel {
                 to: cacheDir,
                 additionalFiles: ["wespeaker.mlmodelc/**", "config.json"],
                 progressHandler: { progress in
-                    progressHandler?(progress * 0.8, "Downloading CoreML model...")
+                    progressHandler?(progress * 0.8, "Loading CoreML model...")
                 }
             )
 

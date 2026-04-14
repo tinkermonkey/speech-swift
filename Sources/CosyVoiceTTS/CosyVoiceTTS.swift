@@ -69,7 +69,7 @@ public final class CosyVoiceTTSModel {
             atPath: cacheDir.appendingPathComponent("vocab.json").path)
 
         if needsWeights || needsTokenizer {
-            progressHandler?(0.0, "Downloading model files...")
+            progressHandler?(0.0, "Loading model files...")
             try await HuggingFaceDownloader.downloadWeights(
                 modelId: modelId,
                 to: cacheDir,
@@ -78,7 +78,7 @@ public final class CosyVoiceTTSModel {
                     "vocab.json", "merges.txt", "tokenizer_config.json",
                 ]
             ) { progress in
-                progressHandler?(progress * 0.5, "Downloading...")
+                progressHandler?(progress * 0.5, "Loading...")
             }
         }
 

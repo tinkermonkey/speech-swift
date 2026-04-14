@@ -118,7 +118,7 @@ public final class PyannoteDiarizationPipeline {
         useVADFilter: Bool = false,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> PyannoteDiarizationPipeline {
-        progressHandler?(0.0, "Downloading segmentation model...")
+        progressHandler?(0.0, "Loading segmentation model...")
 
         // Load segmentation model
         let segCacheDir = try HuggingFaceDownloader.getCacheDirectory(for: segModelId)
@@ -126,7 +126,7 @@ public final class PyannoteDiarizationPipeline {
             modelId: segModelId,
             to: segCacheDir,
             progressHandler: { progress in
-                progressHandler?(progress * 0.3, "Downloading segmentation weights...")
+                progressHandler?(progress * 0.3, "Loading segmentation weights...")
             }
         )
 
@@ -134,7 +134,7 @@ public final class PyannoteDiarizationPipeline {
         let segModel = SegmentationModel(config: segConfig)
         try SegmentationWeightLoader.loadWeights(model: segModel, from: segCacheDir)
 
-        progressHandler?(0.3, "Downloading speaker embedding model...")
+        progressHandler?(0.3, "Loading speaker embedding model...")
 
         // Load embedding model
         let embModel = try await WeSpeakerModel.fromPretrained(
@@ -148,7 +148,7 @@ public final class PyannoteDiarizationPipeline {
         // Optionally load Silero VAD for pre-filtering
         var vadModel: SileroVADModel? = nil
         if useVADFilter {
-            progressHandler?(0.7, "Downloading VAD filter model...")
+            progressHandler?(0.7, "Loading VAD filter model...")
             vadModel = try await SileroVADModel.fromPretrained(
                 engine: .mlx,
                 progressHandler: { progress, status in

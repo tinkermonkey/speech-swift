@@ -221,7 +221,7 @@ public extension Mimi {
         let cfg = MimiConfig.moshiko(numCodebooks: numCodebooks)
         let model = Mimi(cfg: cfg)
 
-        progressHandler?(0.1, "Downloading Mimi codec...")
+        progressHandler?(0.1, "Loading Mimi codec...")
         let mimiDir = try HuggingFaceDownloader.getCacheDirectory(for: repoId)
         let weightFile = mimiDir.appendingPathComponent(filename)
 

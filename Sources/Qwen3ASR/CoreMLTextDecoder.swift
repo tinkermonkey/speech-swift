@@ -98,7 +98,7 @@ public class CoreMLTextDecoder {
     ) async throws -> CoreMLTextDecoder {
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
-        progressHandler?(0.0, "Downloading CoreML decoder...")
+        progressHandler?(0.0, "Loading CoreML decoder...")
         try await HuggingFaceDownloader.downloadWeights(
             modelId: modelId,
             to: cacheDir,
@@ -108,7 +108,7 @@ public class CoreMLTextDecoder {
                 "config.json",
             ]
         ) { fraction in
-            progressHandler?(fraction * 0.8, "Downloading CoreML decoder...")
+            progressHandler?(fraction * 0.8, "Loading CoreML decoder...")
         }
 
         progressHandler?(0.9, "Loading CoreML decoder...")

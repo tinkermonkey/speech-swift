@@ -187,7 +187,7 @@ public class ParakeetASRModel {
         }
 
         // Step 2: Download model files (no preprocessor needed — mel is computed in Swift)
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
         do {
             try await HuggingFaceDownloader.downloadWeights(
                 modelId: modelId,
@@ -200,7 +200,7 @@ public class ParakeetASRModel {
                     "config.json",
                 ]
             ) { fraction in
-                progressHandler?(fraction * 0.7, "Downloading model...")
+                progressHandler?(fraction * 0.7, "Loading model...")
             }
         } catch {
             throw AudioModelError.modelLoadFailed(

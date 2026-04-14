@@ -36,13 +36,13 @@ public final class CamPlusPlusSpeaker {
 
         let modelURL = cacheDir.appendingPathComponent("CamPlusPlus.mlmodelc", isDirectory: true)
         if !FileManager.default.fileExists(atPath: modelURL.path) {
-            progressHandler?(0.0, "Downloading CAM++ speaker model...")
+            progressHandler?(0.0, "Loading CAM++ speaker model...")
             try await HuggingFaceDownloader.downloadWeights(
                 modelId: modelId,
                 to: cacheDir,
                 additionalFiles: ["CamPlusPlus.mlmodelc/**"],
                 progressHandler: { progress in
-                    progressHandler?(progress * 0.8, "Downloading CAM++ speaker model...")
+                    progressHandler?(progress * 0.8, "Loading CAM++ speaker model...")
                 }
             )
         }

@@ -76,7 +76,7 @@ public final class Qwen35CoreMLChat: @unchecked Sendable {
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
         let variant = quantization.rawValue
 
-        progressHandler?(0.05, "Downloading \(variant) model...")
+        progressHandler?(0.05, "Loading \(variant) model...")
         try await HuggingFaceDownloader.downloadWeights(
             modelId: modelId,
             to: cacheDir,
@@ -86,7 +86,7 @@ public final class Qwen35CoreMLChat: @unchecked Sendable {
                 "\(variant)/**/*.bin",
                 "\(variant)/**/Manifest.json",
             ],
-            progressHandler: { p in progressHandler?(p * 0.5, "Downloading...") }
+            progressHandler: { p in progressHandler?(p * 0.5, "Loading...") }
         )
 
         let variantDir = cacheDir.appendingPathComponent(variant)

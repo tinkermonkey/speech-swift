@@ -228,7 +228,7 @@ public final class SpeechEnhancer {
         modelId: String = defaultModelId,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> SpeechEnhancer {
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
@@ -241,7 +241,7 @@ public final class SpeechEnhancer {
                 "auxiliary.npz",
             ],
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading model...")
+                progressHandler?(progress * 0.8, "Loading model...")
             }
         )
 

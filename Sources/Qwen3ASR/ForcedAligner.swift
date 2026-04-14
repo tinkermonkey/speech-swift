@@ -251,7 +251,7 @@ public extension Qwen3ForcedAligner {
         modelId: String = "aufklarer/Qwen3-ForcedAligner-0.6B-4bit",
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> Qwen3ForcedAligner {
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
@@ -262,7 +262,7 @@ public extension Qwen3ForcedAligner {
             additionalFiles: ["vocab.json", "merges.txt", "tokenizer_config.json",
                               "quantize_config.json"],
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading weights...")
+                progressHandler?(progress * 0.8, "Loading weights...")
             }
         )
 

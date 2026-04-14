@@ -53,7 +53,7 @@ public final class PyannoteVADModel {
         vadConfig: VADConfig = .default,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> PyannoteVADModel {
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
@@ -61,7 +61,7 @@ public final class PyannoteVADModel {
             modelId: modelId,
             to: cacheDir,
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading weights...")
+                progressHandler?(progress * 0.8, "Loading weights...")
             }
         )
 

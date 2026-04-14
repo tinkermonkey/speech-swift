@@ -132,7 +132,7 @@ public final class KokoroTTSModel {
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
         // Download E2E model + G2P + voice
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
         try await HuggingFaceDownloader.downloadWeights(
             modelId: modelId,
             to: cacheDir,
@@ -147,7 +147,7 @@ public final class KokoroTTSModel {
                 "voices/\(voice).json",
             ]
         ) { fraction in
-            progressHandler?(fraction * 0.7, "Downloading model...")
+            progressHandler?(fraction * 0.7, "Loading model...")
         }
 
         // Load vocabulary

@@ -54,7 +54,7 @@ public final class FireRedVADModel {
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> FireRedVADModel {
         #if canImport(CoreML)
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
@@ -67,7 +67,7 @@ public final class FireRedVADModel {
                 "cmvn.json",
             ],
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading model...")
+                progressHandler?(progress * 0.8, "Loading model...")
             }
         )
 

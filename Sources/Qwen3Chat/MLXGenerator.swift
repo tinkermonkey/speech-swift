@@ -100,7 +100,7 @@ public final class Qwen35MLXChat: @unchecked Sendable {
         let variant = quantization.rawValue
 
         // Download model files from variant subdirectory (int4/ or int8/)
-        progressHandler?(0.05, "Downloading \(variant) model...")
+        progressHandler?(0.05, "Loading \(variant) model...")
         try await HuggingFaceDownloader.downloadWeights(
             modelId: modelId,
             to: cacheDir,
@@ -111,7 +111,7 @@ public final class Qwen35MLXChat: @unchecked Sendable {
                 "\(variant)/tokenizer_config.json",
             ],
             progressHandler: { progress in
-                progressHandler?(progress * 0.5, "Downloading...")
+                progressHandler?(progress * 0.5, "Loading...")
             }
         )
 

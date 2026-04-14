@@ -1564,7 +1564,7 @@ public final class PersonaPlexModel: Module {
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> PersonaPlexModel {
         // Download weights first to get config
-        progressHandler?(0.05, "Downloading PersonaPlex weights...")
+        progressHandler?(0.05, "Loading PersonaPlex weights...")
         let modelDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
         let weightFiles = [
@@ -1582,7 +1582,7 @@ public final class PersonaPlexModel: Module {
             to: modelDir,
             additionalFiles: weightFiles
         ) { progress in
-            progressHandler?(0.05 + progress * 0.5, "Downloading...")
+            progressHandler?(0.05 + progress * 0.5, "Loading...")
         }
 
         // Read config.json to detect quantization settings

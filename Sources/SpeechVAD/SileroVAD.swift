@@ -233,7 +233,7 @@ public final class SileroVADModel {
     ) async throws -> SileroVADModel {
         let resolvedModelId = modelId ?? (engine == .coreml ? defaultCoreMLModelId : defaultModelId)
 
-        progressHandler?(0.0, "Downloading model...")
+        progressHandler?(0.0, "Loading model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: resolvedModelId)
 
@@ -243,7 +243,7 @@ public final class SileroVADModel {
                 modelId: resolvedModelId,
                 to: cacheDir,
                 progressHandler: { progress in
-                    progressHandler?(progress * 0.8, "Downloading weights...")
+                    progressHandler?(progress * 0.8, "Loading weights...")
                 }
             )
 
@@ -262,7 +262,7 @@ public final class SileroVADModel {
                 to: cacheDir,
                 additionalFiles: ["silero_vad.mlmodelc/**", "config.json"],
                 progressHandler: { progress in
-                    progressHandler?(progress * 0.8, "Downloading CoreML model...")
+                    progressHandler?(progress * 0.8, "Loading CoreML model...")
                 }
             )
 

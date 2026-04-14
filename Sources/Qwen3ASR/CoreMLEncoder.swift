@@ -50,13 +50,13 @@ public class CoreMLASREncoder {
     ) async throws -> CoreMLASREncoder {
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
-        progressHandler?(0.0, "Downloading CoreML encoder...")
+        progressHandler?(0.0, "Loading CoreML encoder...")
         try await HuggingFaceDownloader.downloadWeights(
             modelId: modelId,
             to: cacheDir,
             additionalFiles: ["encoder.mlmodelc/**", "config.json"]
         ) { fraction in
-            progressHandler?(fraction * 0.8, "Downloading CoreML encoder...")
+            progressHandler?(fraction * 0.8, "Loading CoreML encoder...")
         }
 
         progressHandler?(0.9, "Loading CoreML encoder...")

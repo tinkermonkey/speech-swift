@@ -66,7 +66,7 @@ public final class SortformerDiarizer {
         modelId: String = defaultModelId,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> SortformerDiarizer {
-        progressHandler?(0.0, "Downloading Sortformer model...")
+        progressHandler?(0.0, "Loading Sortformer model...")
 
         let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
 
@@ -75,7 +75,7 @@ public final class SortformerDiarizer {
             to: cacheDir,
             additionalFiles: ["Sortformer.mlmodelc/**", "config.json"],
             progressHandler: { progress in
-                progressHandler?(progress * 0.8, "Downloading Sortformer model...")
+                progressHandler?(progress * 0.8, "Loading Sortformer model...")
             }
         )
 
