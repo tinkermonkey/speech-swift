@@ -45,13 +45,31 @@ public struct AudioServer {
         try await app.run()
     }
 
-    public func preloadModels() async throws {
+    /// Preload the specified models concurrently.
+    ///
+    /// `models` is a set of names from: `asr`, `tts`, `cosyvoice`, `diarizer`,
+    /// `personaplex`, `enhancer`. Pass `["all"]` to load everything.
+    public func preloadModels(_ models: Set<String> = ["all"]) async throws {
+        let all = models.contains("all")
         try await withThrowingTaskGroup(of: Void.self) { group in
-            group.addTask { _ = try await self.state.loadASR() }
-            group.addTask { _ = try await self.state.loadTTS() }
-            group.addTask { _ = try await self.state.loadDiarizer() }
-            group.addTask { _ = try await self.state.loadPersonaPlex() }
-            group.addTask { _ = try await self.state.loadEnhancer() }
+            if all || models.contains("asr") {
+                group.addTask { _ = try await self.state.loadASR() }
+            }
+            if all || models.contains("diarizer") {
+                group.addTask { _ = try await self.state.loadDiarizer() }
+            }
+            if all || models.contains("tts") {
+                group.addTask { _ = try await self.state.loadTTS() }
+            }
+            if all || models.contains("cosyvoice") {
+                group.addTask { _ = try await self.state.loadCosyVoice() }
+            }
+            if all || models.contains("personaplex") {
+                group.addTask { _ = try await self.state.loadPersonaPlex() }
+            }
+            if all || models.contains("enhancer") {
+                group.addTask { _ = try await self.state.loadEnhancer() }
+            }
             try await group.waitForAll()
         }
     }

@@ -15,8 +15,11 @@ struct AudioServerCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Port to bind (default: 8080)")
     var port: Int = 8080
 
-    @Flag(name: .long, help: "Load all models on startup (slower start, faster first request)")
-    var preload: Bool = false
+    @Option(
+        name: .long,
+        help: "Comma-separated models to load on startup: asr, diarizer, tts, cosyvoice, personaplex, enhancer, all. Example: --preload asr,diarizer"
+    )
+    var preload: String?
 
     @Flag(name: .long, help: "Log all incoming HTTP requests (method, path, status)")
     var logRequests: Bool = false
@@ -24,10 +27,15 @@ struct AudioServerCommand: AsyncParsableCommand {
     func run() async throws {
         let server = AudioServer(host: host, port: port, logRequests: logRequests)
 
-        if preload {
-            print("Preloading models...")
-            try await server.preloadModels()
-            print("All models loaded.")
+        if let preload {
+            let models = Set(preload.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })
+            let unknown = models.subtracting(["all", "asr", "diarizer", "tts", "cosyvoice", "personaplex", "enhancer"])
+            if !unknown.isEmpty {
+                print("Warning: unknown model(s) ignored: \(unknown.sorted().joined(separator: ", "))")
+            }
+            print("Preloading: \(models.sorted().joined(separator: ", "))")
+            try await server.preloadModels(models)
+            print("Models ready.")
         }
 
         print("Starting server on http://\(host):\(port)")
