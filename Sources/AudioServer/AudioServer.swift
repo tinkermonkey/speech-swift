@@ -46,10 +46,14 @@ public struct AudioServer {
     }
 
     public func preloadModels() async throws {
-        _ = try await state.loadASR()
-        _ = try await state.loadTTS()
-        _ = try await state.loadPersonaPlex()
-        _ = try await state.loadEnhancer()
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { _ = try await self.state.loadASR() }
+            group.addTask { _ = try await self.state.loadTTS() }
+            group.addTask { _ = try await self.state.loadDiarizer() }
+            group.addTask { _ = try await self.state.loadPersonaPlex() }
+            group.addTask { _ = try await self.state.loadEnhancer() }
+            try await group.waitForAll()
+        }
     }
 
     // MARK: - HTTP Routes
