@@ -1,5 +1,6 @@
 import Foundation
 import Hummingbird
+import MLX
 import NIOCore
 import AudioCommon
 import SpeakerRegistry
@@ -39,11 +40,24 @@ extension AudioServer {
                 let diarizer = try await self.state.loadDiarizer()
                 let asr = try await self.state.loadASR()
                 let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
-                let result = try await pipeline.process(
-                    audioURL: tmpURL,
-                    audio: audio,
-                    threshold: threshold,
-                    minimumDurationForRecognition: minDuration)
+                // Release MLX intermediate buffers after inference (success or error).
+                // Without this the buffer pool grows unboundedly across sessions.
+                defer {
+                    let cacheBefore = Memory.cacheMemory
+                    Memory.clearCache()
+                    let cacheAfter = Memory.cacheMemory
+                    if cacheBefore > 0 {
+                        context.logger.debug("MLX cache cleared: \(cacheBefore / 1024 / 1024)MB → \(cacheAfter / 1024 / 1024)MB (active: \(Memory.activeMemory / 1024 / 1024)MB)")
+                    }
+                }
+                let result = try await self.inferenceSemaphore.withPermit {
+                    try await pipeline.process(
+                        audioURL: tmpURL,
+                        audio: audio,
+                        threshold: threshold,
+                        minimumDurationForRecognition: minDuration,
+                        requestID: context.id)
+                }
 
                 return jsonResponse(ProcessedSessionResponse(result).json)
             } catch {
@@ -168,7 +182,7 @@ private struct ProcessedSessionResponse {
             "num_speakers": result.numSpeakers,
             "segments": result.segments.map { seg -> [String: Any] in
                 var d: [String: Any] = [
-                    "speaker_id": seg.speaker.flatMap(\.id).map { $0 as Any } ?? NSNull(),
+                    "speaker_id": seg.speaker.flatMap { $0.id }.map { $0 as Any } ?? NSNull(),
                     "speaker_label": seg.speaker.map { $0.label as Any } ?? NSNull(),
                     "start": seg.startTime,
                     "end": seg.endTime,

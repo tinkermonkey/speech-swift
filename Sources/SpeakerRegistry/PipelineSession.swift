@@ -2,6 +2,12 @@ import Foundation
 import AudioCommon
 import SpeechVAD
 
+/// Returns elapsed milliseconds from `start` to now using the continuous (monotonic) clock.
+private func elapsedMs(from start: ContinuousClock.Instant) -> Double {
+    let d = ContinuousClock.now - start
+    return Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15
+}
+
 // MARK: - Output Types
 
 /// A diarized audio file fully resolved against the speaker registry.
@@ -41,7 +47,13 @@ public struct AnnotatedSegment: Sendable {
 /// let ps = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
 /// let result = try await ps.process(audioURL: url, audio: samples)
 /// ```
-public struct PipelineSession: Sendable {
+///
+/// ## Sendable note
+/// `DiarizationPipeline` and `SpeechRecognitionModel` are not thread-safe. This type is
+/// marked `@unchecked Sendable` because each instance is created per-request and used
+/// exclusively within a single `InferenceSemaphore.withPermit` scope — it is never shared
+/// across concurrent tasks.
+public struct PipelineSession: @unchecked Sendable {
 
     public let diarizer: DiarizationPipeline
     public let registry: SpeakerRegistry
@@ -80,25 +92,32 @@ public struct PipelineSession: Sendable {
         audio: [Float],
         config: DiarizationConfig = .default,
         threshold: Float? = nil,
-        minimumDurationForRecognition: Double = 10.0
+        minimumDurationForRecognition: Double = 10.0,
+        requestID: String? = nil
     ) async throws -> ProcessedSession {
         let sampleRate = 16000
         let durationSeconds = Double(audio.count) / Double(sampleRate)
+        let tag = requestID.map { "[\($0)] " } ?? ""
 
         // ── Short-clip guard ─────────────────────────────────────────────────
         // Clips below the minimum are not suitable for speaker recognition.
         // Skip diarization and registry entirely to avoid polluting the registry
         // with low-confidence identities. ASR still runs if available.
         if durationSeconds < minimumDurationForRecognition {
-            AudioLog.pipeline.info("Clip too short for speaker recognition (\(String(format: "%.1f", durationSeconds))s < \(minimumDurationForRecognition)s) — ASR only: \(audioURL.lastPathComponent)")
+            AudioLog.pipeline.info("\(tag)Clip too short for speaker recognition (\(String(format: "%.1f", durationSeconds))s < \(minimumDurationForRecognition)s) — ASR only")
             return try await asrOnlySession(audio: audio, sampleRate: sampleRate, durationSeconds: durationSeconds)
         }
 
         // ── Full pipeline ────────────────────────────────────────────────────
-        AudioLog.pipeline.info("Diarizing \(audioURL.lastPathComponent) (\(String(format: "%.1f", durationSeconds))s)")
+        AudioLog.pipeline.info("\(tag)Diarizing \(String(format: "%.2f", durationSeconds))s (\(audio.count) samples)")
+        let clock = ContinuousClock()
+        let t0 = clock.now
         let diarResult = diarizer.diarize(audio: audio, sampleRate: sampleRate, config: config)
+        let diarMs = Int(elapsedMs(from: t0))
+        AudioLog.pipeline.info("\(tag)Diarization done: \(diarResult.segments.count) segs, \(diarResult.speakerEmbeddings.count) speakers (\(diarMs)ms)")
 
         // Map local diarization speaker index → registry Speaker (nil if unidentifiable)
+        let tResolve = clock.now
         var localToRegistry: [Int: Speaker?] = [:]
         for (localId, embedding) in diarResult.speakerEmbeddings.enumerated() {
             let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
@@ -112,8 +131,11 @@ public struct PipelineSession: Sendable {
                 threshold: threshold)
             localToRegistry[localId] = speaker
         }
+        let resolveMs = Int(elapsedMs(from: tResolve))
+        AudioLog.pipeline.info("\(tag)Registry resolve done (\(resolveMs)ms)")
 
         // Build annotated output
+        let tASR = clock.now
         var annotated: [AnnotatedSegment] = []
         for seg in diarResult.segments {
             guard let speakerEntry = localToRegistry[seg.speakerId] else { continue }
@@ -133,10 +155,15 @@ public struct PipelineSession: Sendable {
                 endTime: end,
                 transcriptText: transcript))
         }
+        if asr != nil {
+            let asrMs = Int(elapsedMs(from: tASR))
+            AudioLog.pipeline.info("\(tag)ASR done: \(annotated.count) segments (\(asrMs)ms)")
+        }
 
+        let totalMs = Int(elapsedMs(from: t0))
         let asrNote = asr != nil ? " with transcription" : ""
         let identified = localToRegistry.values.compactMap { $0 }.count
-        AudioLog.pipeline.info("Resolved \(identified)/\(localToRegistry.count) speaker(s) from \(audioURL.lastPathComponent)\(asrNote)")
+        AudioLog.pipeline.info("\(tag)Resolved \(identified)/\(localToRegistry.count) speaker(s)\(asrNote) [diarize=\(diarMs)ms resolve=\(resolveMs)ms total=\(totalMs)ms]")
         return ProcessedSession(segments: annotated)
     }
 

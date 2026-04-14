@@ -27,11 +27,17 @@ struct AudioServerCommand: AsyncParsableCommand {
     )
     var keepAlive: Double = 10.0
 
+    @Option(
+        name: .long,
+        help: "Maximum number of /registry/sessions inference calls to run concurrently (default: 1). Values > 1 run multiple inferences in parallel but each will compete for GPU — only increase if you have spare VRAM and have profiled the benefit."
+    )
+    var concurrency: Int = 1
+
     @Flag(name: .long, help: "Log all incoming HTTP requests (method, path, status)")
     var logRequests: Bool = false
 
     func run() async throws {
-        let server = AudioServer(host: host, port: port, logRequests: logRequests)
+        let server = AudioServer(host: host, port: port, logRequests: logRequests, concurrency: concurrency)
 
         if let preload {
             let models = Set(preload.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })

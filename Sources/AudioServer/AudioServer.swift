@@ -19,12 +19,15 @@ public struct AudioServer {
     let host: String
     let port: Int
     let logRequests: Bool
+    /// Gates concurrent GPU inference on /registry/sessions.
+    let inferenceSemaphore: InferenceSemaphore
 
-    public init(host: String = "127.0.0.1", port: Int = 8080, logRequests: Bool = false) {
+    public init(host: String = "127.0.0.1", port: Int = 8080, logRequests: Bool = false, concurrency: Int = 1) {
         self.state = ModelState()
         self.host = host
         self.port = port
         self.logRequests = logRequests
+        self.inferenceSemaphore = InferenceSemaphore(permits: concurrency)
     }
 
     public func run() async throws {
@@ -68,10 +71,14 @@ public struct AudioServer {
                 }
                 guard !Task.isCancelled else { break }
                 // Only warm up models that are already loaded; don't trigger a load.
+                // Check cancellation immediately before each blocking sync call — once
+                // inside transcribe/diarize the call cannot be interrupted.
                 if let asr = try? await state.loadedASR() {
+                    guard !Task.isCancelled else { break }
                     _ = asr.transcribe(audio: silence, sampleRate: 16000, language: nil)
                 }
                 if let diarizer = try? await state.loadedDiarizer() {
+                    guard !Task.isCancelled else { break }
                     _ = diarizer.diarize(audio: silence, sampleRate: 16000)
                 }
             }
@@ -313,10 +320,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("asr", .ready)
+                self.setStatus("asr", .ready)
                 return m
             } catch {
-                await self.setStatus("asr", .error)
+                self.setStatus("asr", .error)
                 throw error
             }
         }
@@ -331,10 +338,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await Qwen3TTSModel.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("tts", .ready)
+                self.setStatus("tts", .ready)
                 return m
             } catch {
-                await self.setStatus("tts", .error)
+                self.setStatus("tts", .error)
                 throw error
             }
         }
@@ -349,10 +356,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await CosyVoiceTTSModel.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("cosyvoice", .ready)
+                self.setStatus("cosyvoice", .ready)
                 return m
             } catch {
-                await self.setStatus("cosyvoice", .error)
+                self.setStatus("cosyvoice", .error)
                 throw error
             }
         }
@@ -367,10 +374,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await PersonaPlexModel.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("personaplex", .ready)
+                self.setStatus("personaplex", .ready)
                 return m
             } catch {
-                await self.setStatus("personaplex", .error)
+                self.setStatus("personaplex", .error)
                 throw error
             }
         }
@@ -396,10 +403,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await SpeechEnhancer.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("enhancer", .ready)
+                self.setStatus("enhancer", .ready)
                 return m
             } catch {
-                await self.setStatus("enhancer", .error)
+                self.setStatus("enhancer", .error)
                 throw error
             }
         }
@@ -414,10 +421,10 @@ actor ModelState {
         let task = Task {
             do {
                 let m = try await DiarizationPipeline.fromPretrained(progressHandler: logProgress)
-                await self.setStatus("diarizer", .ready)
+                self.setStatus("diarizer", .ready)
                 return m
             } catch {
-                await self.setStatus("diarizer", .error)
+                self.setStatus("diarizer", .error)
                 throw error
             }
         }
