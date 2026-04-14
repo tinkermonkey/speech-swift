@@ -45,6 +45,39 @@ public struct AudioServer {
         try await app.run()
     }
 
+    /// Start a background keep-alive loop that runs a tiny inference every `intervalSeconds`
+    /// to prevent macOS from evicting MLX Metal kernels from GPU memory.
+    ///
+    /// Without this, the first request after a period of GPU idle (typically ~15–30s)
+    /// re-uploads and re-dispatches the compute graph, adding several seconds of latency.
+    /// A minimal inference (0.1s of silence) is enough to keep the kernels hot.
+    ///
+    /// Call this after `preloadModels()`. Returns immediately; the loop runs in the background
+    /// until the task is cancelled.
+    @discardableResult
+    public func startKeepAlive(intervalSeconds: Double = 10.0) -> Task<Void, Never> {
+        let state = self.state
+        return Task {
+            // 0.1 s of silence at 16 kHz — enough to dispatch the compute graph
+            let silence = [Float](repeating: 0, count: 1600)
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(intervalSeconds))
+                } catch {
+                    break  // cancelled
+                }
+                guard !Task.isCancelled else { break }
+                // Only warm up models that are already loaded; don't trigger a load.
+                if let asr = try? await state.loadedASR() {
+                    _ = asr.transcribe(audio: silence, sampleRate: 16000, language: nil)
+                }
+                if let diarizer = try? await state.loadedDiarizer() {
+                    _ = diarizer.diarize(audio: silence, sampleRate: 16000)
+                }
+            }
+        }
+    }
+
     /// Preload the specified models concurrently.
     ///
     /// `models` is a set of names from: `asr`, `tts`, `cosyvoice`, `diarizer`,
@@ -259,6 +292,18 @@ actor ModelState {
     private var spmDecoder: SentencePieceDecoder?
 
     func getSpmDecoder() -> SentencePieceDecoder? { spmDecoder }
+
+    // MARK: Already-loaded accessors (for keep-alive — never trigger a load)
+
+    func loadedASR() async throws -> Qwen3ASRModel? {
+        guard let task = asrTask else { return nil }
+        return try await task.value
+    }
+
+    func loadedDiarizer() async throws -> DiarizationPipeline? {
+        guard let task = diarizerTask else { return nil }
+        return try await task.value
+    }
 
     // MARK: Loaders
 

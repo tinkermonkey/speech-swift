@@ -21,6 +21,12 @@ struct AudioServerCommand: AsyncParsableCommand {
     )
     var preload: String?
 
+    @Option(
+        name: .long,
+        help: "Run a tiny inference every N seconds to keep GPU kernels hot and prevent eviction latency (default: 10). Set to 0 to disable."
+    )
+    var keepAlive: Double = 10.0
+
     @Flag(name: .long, help: "Log all incoming HTTP requests (method, path, status)")
     var logRequests: Bool = false
 
@@ -36,6 +42,11 @@ struct AudioServerCommand: AsyncParsableCommand {
             print("Preloading: \(models.sorted().joined(separator: ", "))")
             try await server.preloadModels(models)
             print("Models ready.")
+        }
+
+        if keepAlive > 0 {
+            server.startKeepAlive(intervalSeconds: keepAlive)
+            print("GPU keep-alive enabled (every \(Int(keepAlive))s)")
         }
 
         print("Starting server on http://\(host):\(port)")
