@@ -13,6 +13,7 @@ public struct SpeakersCommand: ParsableCommand {
             LabelSubcommand.self,
             MergeSubcommand.self,
             ShowSubcommand.self,
+            ResetSubcommand.self,
         ]
     )
     public init() {}
@@ -117,6 +118,38 @@ extension SpeakersCommand {
             try runAsync {
                 try await reg.merge(src: src, into: dst)
                 print("Merged speaker \(src) into \(dst)")
+            }
+        }
+    }
+}
+
+// MARK: - audio speakers reset
+
+extension SpeakersCommand {
+    public struct ResetSubcommand: ParsableCommand {
+        public static let configuration = CommandConfiguration(
+            commandName: "reset",
+            abstract: "Wipe all speakers and centroids, resetting the registry to empty"
+        )
+
+        @OptionGroup var registry: RegistryOptions
+        @Flag(name: .long, help: "Skip confirmation prompt") public var force: Bool = false
+
+        public init() {}
+
+        public func run() throws {
+            if !force {
+                print("This will permanently delete all speakers and centroids in the registry.")
+                print("Type 'yes' to confirm: ", terminator: "")
+                guard readLine()?.lowercased() == "yes" else {
+                    print("Aborted.")
+                    return
+                }
+            }
+            let reg = try SpeakerRegistry.open(at: registry.url)
+            try runAsync {
+                try await reg.reset()
+                print("Registry reset: all speakers and centroids cleared.")
             }
         }
     }
