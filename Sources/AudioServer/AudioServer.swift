@@ -93,6 +93,16 @@ public struct AudioServer {
                 body: .init(byteBuffer: .init(string: "{\"status\":\"ok\"}")))
         }
 
+        // GET /status — per-model readiness. Poll this after startup to know when
+        // preloaded models are ready. `ready` is true when all requested models have
+        // finished loading. Models that were never requested are omitted.
+        router.get("/status") { _, _ in
+            let statuses = await state.statuses()
+            let ready = await state.isReady()
+            let models = statuses.mapValues { $0.rawValue }
+            return jsonResponse(["ready": ready, "models": models] as [String: Any])
+        }
+
         router.post("/transcribe") { request, _ in
             let body = try await request.body.collect(upTo: 50 * 1024 * 1024)
             let params = try RequestParams.parse(body, contentType: request.headers[.contentType])
@@ -211,15 +221,35 @@ public struct AudioServer {
 
 // MARK: - Lazy Model State
 
-// MARK: - Lazy Model State
-
-/// Actor-isolated lazy model loader.
+/// Actor-isolated lazy model loader with per-model status tracking.
 ///
 /// Each `load*()` method creates a `Task` on the first call and stores it. Concurrent
 /// callers that arrive before loading finishes await the same task rather than starting
 /// independent loads. Actor isolation guarantees the task-reference check and set are
 /// atomic (no suspension point between them), so no explicit locking is needed.
 actor ModelState {
+
+    // MARK: Status
+
+    enum ModelStatus: String {
+        case idle       // never requested
+        case loading    // task in flight
+        case ready      // loaded successfully
+        case error      // load failed
+    }
+
+    private var status: [String: ModelStatus] = [:]
+
+    /// Snapshot of all model statuses. Only models that have been requested appear.
+    func statuses() -> [String: ModelStatus] { status }
+
+    /// `true` when every requested model has finished loading (ready or error).
+    func isReady() -> Bool {
+        !status.isEmpty && status.values.allSatisfy { $0 == .ready || $0 == .error }
+    }
+
+    // MARK: Tasks
+
     private var asrTask: Task<Qwen3ASRModel, Error>?
     private var ttsTask: Task<Qwen3TTSModel, Error>?
     private var cosyvoiceTask: Task<CosyVoiceTTSModel, Error>?
@@ -228,12 +258,23 @@ actor ModelState {
     private var diarizerTask: Task<DiarizationPipeline, Error>?
     private var spmDecoder: SentencePieceDecoder?
 
-    /// Returns the SPM decoder if PersonaPlex has been loaded.
     func getSpmDecoder() -> SentencePieceDecoder? { spmDecoder }
+
+    // MARK: Loaders
 
     func loadASR() async throws -> Qwen3ASRModel {
         if let task = asrTask { return try await task.value }
-        let task = Task { try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress) }
+        status["asr"] = .loading
+        let task = Task {
+            do {
+                let m = try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("asr", .ready)
+                return m
+            } catch {
+                await self.setStatus("asr", .error)
+                throw error
+            }
+        }
         asrTask = task
         print("[server] Loading Qwen3-ASR...")
         return try await task.value
@@ -241,7 +282,17 @@ actor ModelState {
 
     func loadTTS() async throws -> Qwen3TTSModel {
         if let task = ttsTask { return try await task.value }
-        let task = Task { try await Qwen3TTSModel.fromPretrained(progressHandler: logProgress) }
+        status["tts"] = .loading
+        let task = Task {
+            do {
+                let m = try await Qwen3TTSModel.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("tts", .ready)
+                return m
+            } catch {
+                await self.setStatus("tts", .error)
+                throw error
+            }
+        }
         ttsTask = task
         print("[server] Loading Qwen3-TTS...")
         return try await task.value
@@ -249,17 +300,35 @@ actor ModelState {
 
     func loadCosyVoice() async throws -> CosyVoiceTTSModel {
         if let task = cosyvoiceTask { return try await task.value }
-        let task = Task { try await CosyVoiceTTSModel.fromPretrained(progressHandler: logProgress) }
+        status["cosyvoice"] = .loading
+        let task = Task {
+            do {
+                let m = try await CosyVoiceTTSModel.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("cosyvoice", .ready)
+                return m
+            } catch {
+                await self.setStatus("cosyvoice", .error)
+                throw error
+            }
+        }
         cosyvoiceTask = task
         print("[server] Loading CosyVoice...")
         return try await task.value
     }
 
     func loadPersonaPlex() async throws -> PersonaPlexModel {
-        if let task = personaplexTask {
-            return try await task.value
+        if let task = personaplexTask { return try await task.value }
+        status["personaplex"] = .loading
+        let task = Task {
+            do {
+                let m = try await PersonaPlexModel.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("personaplex", .ready)
+                return m
+            } catch {
+                await self.setStatus("personaplex", .error)
+                throw error
+            }
         }
-        let task = Task { try await PersonaPlexModel.fromPretrained(progressHandler: logProgress) }
         personaplexTask = task
         print("[server] Loading PersonaPlex 7B...")
         let model = try await task.value
@@ -278,7 +347,17 @@ actor ModelState {
 
     func loadEnhancer() async throws -> SpeechEnhancer {
         if let task = enhancerTask { return try await task.value }
-        let task = Task { try await SpeechEnhancer.fromPretrained(progressHandler: logProgress) }
+        status["enhancer"] = .loading
+        let task = Task {
+            do {
+                let m = try await SpeechEnhancer.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("enhancer", .ready)
+                return m
+            } catch {
+                await self.setStatus("enhancer", .error)
+                throw error
+            }
+        }
         enhancerTask = task
         print("[server] Loading DeepFilterNet3...")
         return try await task.value
@@ -286,11 +365,23 @@ actor ModelState {
 
     func loadDiarizer() async throws -> DiarizationPipeline {
         if let task = diarizerTask { return try await task.value }
-        let task = Task { try await DiarizationPipeline.fromPretrained(progressHandler: logProgress) }
+        status["diarizer"] = .loading
+        let task = Task {
+            do {
+                let m = try await DiarizationPipeline.fromPretrained(progressHandler: logProgress)
+                await self.setStatus("diarizer", .ready)
+                return m
+            } catch {
+                await self.setStatus("diarizer", .error)
+                throw error
+            }
+        }
         diarizerTask = task
         print("[server] Loading diarization pipeline...")
         return try await task.value
     }
+
+    private func setStatus(_ name: String, _ s: ModelStatus) { status[name] = s }
 }
 
 private func logProgress(_ progress: Double, _ status: String) {
