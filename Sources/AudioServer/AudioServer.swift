@@ -141,7 +141,7 @@ public struct AudioServer {
                 maxSteps: maxSteps)
 
             var transcript: String?
-            if let dec = state.spmDecoder, !result.textTokens.isEmpty {
+            if let dec = await state.getSpmDecoder(), !result.textTokens.isEmpty {
                 transcript = dec.decode(result.textTokens)
             }
 
@@ -189,69 +189,85 @@ public struct AudioServer {
 
 // MARK: - Lazy Model State
 
-final class ModelState: @unchecked Sendable {
-    private var asr: Qwen3ASRModel?
-    private var tts: Qwen3TTSModel?
-    private var cosyvoice: CosyVoiceTTSModel?
-    private var personaplex: PersonaPlexModel?
-    private var enhancer: SpeechEnhancer?
-    private var diarizer: DiarizationPipeline?
-    var spmDecoder: SentencePieceDecoder?
+// MARK: - Lazy Model State
+
+/// Actor-isolated lazy model loader.
+///
+/// Each `load*()` method creates a `Task` on the first call and stores it. Concurrent
+/// callers that arrive before loading finishes await the same task rather than starting
+/// independent loads. Actor isolation guarantees the task-reference check and set are
+/// atomic (no suspension point between them), so no explicit locking is needed.
+actor ModelState {
+    private var asrTask: Task<Qwen3ASRModel, Error>?
+    private var ttsTask: Task<Qwen3TTSModel, Error>?
+    private var cosyvoiceTask: Task<CosyVoiceTTSModel, Error>?
+    private var personaplexTask: Task<PersonaPlexModel, Error>?
+    private var enhancerTask: Task<SpeechEnhancer, Error>?
+    private var diarizerTask: Task<DiarizationPipeline, Error>?
+    private var spmDecoder: SentencePieceDecoder?
+
+    /// Returns the SPM decoder if PersonaPlex has been loaded.
+    func getSpmDecoder() -> SentencePieceDecoder? { spmDecoder }
 
     func loadASR() async throws -> Qwen3ASRModel {
-        if let m = asr { return m }
+        if let task = asrTask { return try await task.value }
+        let task = Task { try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress) }
+        asrTask = task
         print("[server] Loading Qwen3-ASR...")
-        let m = try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress)
-        asr = m
-        return m
+        return try await task.value
     }
 
     func loadTTS() async throws -> Qwen3TTSModel {
-        if let m = tts { return m }
+        if let task = ttsTask { return try await task.value }
+        let task = Task { try await Qwen3TTSModel.fromPretrained(progressHandler: logProgress) }
+        ttsTask = task
         print("[server] Loading Qwen3-TTS...")
-        let m = try await Qwen3TTSModel.fromPretrained(progressHandler: logProgress)
-        tts = m
-        return m
+        return try await task.value
     }
 
     func loadCosyVoice() async throws -> CosyVoiceTTSModel {
-        if let m = cosyvoice { return m }
+        if let task = cosyvoiceTask { return try await task.value }
+        let task = Task { try await CosyVoiceTTSModel.fromPretrained(progressHandler: logProgress) }
+        cosyvoiceTask = task
         print("[server] Loading CosyVoice...")
-        let m = try await CosyVoiceTTSModel.fromPretrained(progressHandler: logProgress)
-        cosyvoice = m
-        return m
+        return try await task.value
     }
 
     func loadPersonaPlex() async throws -> PersonaPlexModel {
-        if let m = personaplex { return m }
+        if let task = personaplexTask {
+            return try await task.value
+        }
+        let task = Task { try await PersonaPlexModel.fromPretrained(progressHandler: logProgress) }
+        personaplexTask = task
         print("[server] Loading PersonaPlex 7B...")
-        let m = try await PersonaPlexModel.fromPretrained(progressHandler: logProgress)
-        personaplex = m
-        do {
-            let cacheDir = try HuggingFaceDownloader.getCacheDirectory(
-                for: "aufklarer/PersonaPlex-7B-MLX-4bit")
-            let spmPath = cacheDir.appendingPathComponent("tokenizer_spm_32k_3.model").path
-            if FileManager.default.fileExists(atPath: spmPath) {
-                spmDecoder = try SentencePieceDecoder(modelPath: spmPath)
-            }
-        } catch {}
-        return m
+        let model = try await task.value
+        if spmDecoder == nil {
+            do {
+                let cacheDir = try HuggingFaceDownloader.getCacheDirectory(
+                    for: "aufklarer/PersonaPlex-7B-MLX-4bit")
+                let spmPath = cacheDir.appendingPathComponent("tokenizer_spm_32k_3.model").path
+                if FileManager.default.fileExists(atPath: spmPath) {
+                    spmDecoder = try SentencePieceDecoder(modelPath: spmPath)
+                }
+            } catch {}
+        }
+        return model
     }
 
     func loadEnhancer() async throws -> SpeechEnhancer {
-        if let m = enhancer { return m }
+        if let task = enhancerTask { return try await task.value }
+        let task = Task { try await SpeechEnhancer.fromPretrained(progressHandler: logProgress) }
+        enhancerTask = task
         print("[server] Loading DeepFilterNet3...")
-        let m = try await SpeechEnhancer.fromPretrained(progressHandler: logProgress)
-        enhancer = m
-        return m
+        return try await task.value
     }
 
     func loadDiarizer() async throws -> DiarizationPipeline {
-        if let m = diarizer { return m }
+        if let task = diarizerTask { return try await task.value }
+        let task = Task { try await DiarizationPipeline.fromPretrained(progressHandler: logProgress) }
+        diarizerTask = task
         print("[server] Loading diarization pipeline...")
-        let m = try await DiarizationPipeline.fromPretrained(progressHandler: logProgress)
-        diarizer = m
-        return m
+        return try await task.value
     }
 }
 
