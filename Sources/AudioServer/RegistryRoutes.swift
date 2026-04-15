@@ -34,6 +34,11 @@ extension AudioServer {
             let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 1.0
             let minEnrollmentDuration = request.uri.queryParameters.get("min_enrollment_duration").flatMap(Double.init) ?? 10.0
             let language = request.uri.queryParameters.get("language")
+            guard minDuration <= minEnrollmentDuration else {
+                return errorResponse(
+                    "min_duration (\(minDuration)s) must be ≤ min_enrollment_duration (\(minEnrollmentDuration)s)",
+                    status: .badRequest)
+            }
             do {
                 let tRequest = ContinuousClock.now
 

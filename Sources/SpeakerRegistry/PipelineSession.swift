@@ -132,6 +132,17 @@ public struct PipelineSession: @unchecked Sendable {
         let tag = "[\(currentThreadTag)]\(requestID.map { "[\($0)]" } ?? "") "
         let t0 = ContinuousClock.now
 
+        // ── Threshold sanity ─────────────────────────────────────────────────
+        // If the caller inverts the thresholds, clips that pass the diarization
+        // floor would be immediately eligible for enrollment while clips between
+        // the two values get ASR-only — the opposite of the intended semantics.
+        // Clamp silently so the invariant always holds; the HTTP layer validates
+        // inputs before reaching here, so this guards against direct library use.
+        let effectiveEnrollmentMin = max(minimumDurationForEnrollment, minimumDurationForDiarization)
+        if effectiveEnrollmentMin != minimumDurationForEnrollment {
+            AudioLog.pipeline.warning("\(tag)minimumDurationForEnrollment (\(minimumDurationForEnrollment)s) < minimumDurationForDiarization (\(minimumDurationForDiarization)s) — clamped to \(effectiveEnrollmentMin)s")
+        }
+
         // ── Short-clip guard ─────────────────────────────────────────────────
         // Clips below the diarization minimum cannot produce reliable speaker
         // embeddings. Skip diarization and registry entirely; ASR still runs.
@@ -144,8 +155,8 @@ public struct PipelineSession: @unchecked Sendable {
         // ── Enrollment mode ───────────────────────────────────────────────────
         // Clips below the enrollment threshold are diarized and matched against
         // existing speakers but will not create new registry entries.
-        let canEnroll = durationSeconds >= minimumDurationForEnrollment
-        let enrollNote = canEnroll ? "" : " (match-only, clip < \(String(format: "%.0f", minimumDurationForEnrollment))s enrollment threshold)"
+        let canEnroll = durationSeconds >= effectiveEnrollmentMin
+        let enrollNote = canEnroll ? "" : " (match-only, clip < \(String(format: "%.0f", effectiveEnrollmentMin))s enrollment threshold)"
 
         // ── Full pipeline ────────────────────────────────────────────────────
         AudioLog.pipeline.info("\(tag)Diarizing \(String(format: "%.2f", durationSeconds))s (\(audio.count) samples)\(enrollNote)")
