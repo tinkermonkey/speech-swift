@@ -133,7 +133,8 @@ public struct PipelineSession: @unchecked Sendable {
         // with low-confidence identities. ASR still runs if available.
         if durationSeconds < minimumDurationForRecognition {
             AudioLog.pipeline.info("\(tag)Clip too short for speaker recognition (\(String(format: "%.1f", durationSeconds))s < \(minimumDurationForRecognition)s) — ASR only")
-            return try await asrOnlySession(audio: audio, sampleRate: sampleRate, durationSeconds: durationSeconds, language: language, t0: t0)
+            let regSize = await registry.centroidCount
+            return try await asrOnlySession(audio: audio, sampleRate: sampleRate, durationSeconds: durationSeconds, language: language, regSize: regSize, t0: t0)
         }
 
         // ── Full pipeline ────────────────────────────────────────────────────
@@ -218,13 +219,14 @@ public struct PipelineSession: @unchecked Sendable {
         sampleRate: Int,
         durationSeconds: Double,
         language: String? = nil,
+        regSize: Int,
         t0: ContinuousClock.Instant
     ) async throws -> ProcessedSession {
         guard let asr else {
             return ProcessedSession(
                 segments: [],
                 timings: PipelineTimings(
-                    diarize: .zero, resolveMs: 0, regSize: 0, enrolled: 0,
+                    diarize: .zero, resolveMs: 0, regSize: regSize, enrolled: 0,
                     asrMs: 0, segCount: 0, totalMs: Int(elapsedMs(from: t0))))
         }
         let tASR = ContinuousClock.now
@@ -239,7 +241,7 @@ public struct PipelineSession: @unchecked Sendable {
         return ProcessedSession(
             segments: [segment],
             timings: PipelineTimings(
-                diarize: .zero, resolveMs: 0, regSize: 0, enrolled: 0,
+                diarize: .zero, resolveMs: 0, regSize: regSize, enrolled: 0,
                 asrMs: asrMs, segCount: 1, totalMs: totalMs))
     }
 }

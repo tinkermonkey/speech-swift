@@ -295,7 +295,7 @@ public actor SpeakerRegistry {
         }
 
         let margin = sim - secondBestSim
-        AudioLog.pipeline.debug("Registry: matched \(speaker.label) sim=\(String(format: "%.3f", sim)) runner_up=\(String(format: "%.3f", secondBestSim)) margin=\(String(format: "%.3f", margin)) reg_size=\(regSize))")
+        AudioLog.pipeline.debug("Registry: matched \(speaker.label) sim=\(String(format: "%.3f", sim)) runner_up=\(String(format: "%.3f", secondBestSim)) margin=\(String(format: "%.3f", margin)) reg_size=\(regSize)")
         return (speaker, sim)
     }
 
