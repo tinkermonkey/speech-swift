@@ -75,12 +75,14 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.1.6"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", "2.5.0"..<"2.17.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird-websocket.git", from: "2.6.0"),
+        .package(url: "https://github.com/apple/swift-log", from: "1.5.0"),
     ],
     targets: [
         .target(
             name: "AudioCommon",
             dependencies: [
-                .product(name: "Hub", package: "swift-transformers")
+                .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .target(
@@ -215,7 +217,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "AudioCLI",
-            dependencies: ["AudioCLILib"]
+            dependencies: [
+                "AudioCLILib",
+                .product(name: "Logging", package: "swift-log"),
+            ]
         ),
         .target(
             name: "AudioServer",
@@ -235,7 +240,8 @@ let package = Package(
             name: "AudioServerCLI",
             dependencies: [
                 "AudioServer",
-                .product(name: "ArgumentParser", package: "swift-argument-parser")
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .testTarget(

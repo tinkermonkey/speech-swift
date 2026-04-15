@@ -1,6 +1,7 @@
 import Foundation
 import ArgumentParser
 import AudioServer
+import AudioCommon
 
 @main
 struct AudioServerCommand: AsyncParsableCommand {
@@ -37,6 +38,7 @@ struct AudioServerCommand: AsyncParsableCommand {
     var logRequests: Bool = false
 
     func run() async throws {
+        bootstrapLogging()
         let server = AudioServer(host: host, port: port, logRequests: logRequests, concurrency: concurrency)
 
         if let preload {

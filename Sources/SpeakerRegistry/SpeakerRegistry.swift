@@ -1,6 +1,5 @@
 import Foundation
 import AudioCommon
-import os
 
 private func registryElapsedMs(from start: ContinuousClock.Instant) -> Int {
     let d = ContinuousClock.now - start
@@ -140,7 +139,7 @@ public actor SpeakerRegistry {
         guard let (speaker, similarity) = bestMatch(embedding: embedding, threshold: effectiveThreshold) else {
             return nil
         }
-        AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(similarity, format: .fixed(precision: 3)))")
+        AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(String(format: "%.3f", similarity)))")
         return speaker
     }
 
@@ -160,7 +159,7 @@ public actor SpeakerRegistry {
         let effectiveThreshold = threshold ?? similarityThreshold
 
         if let (speaker, similarity) = bestMatch(embedding: embedding, threshold: effectiveThreshold) {
-            AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(similarity, format: .fixed(precision: 3)))")
+            AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(String(format: "%.3f", similarity)))")
             if isHighQuality {
                 guard embedding.allSatisfy({ $0.isFinite }) else {
                     AudioLog.pipeline.warning("Skipped centroid update for \(speaker.label): embedding contains NaN/Inf")
