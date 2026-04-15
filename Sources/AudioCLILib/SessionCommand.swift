@@ -38,8 +38,11 @@ extension SessionCommand {
         @Option(name: .long, help: "Registry file path (default: ~/Library/Caches/qwen3-speech/speaker-registry.json)")
         public var registryPath: String?
 
-        @Option(name: .long, help: "Minimum clip duration in seconds for speaker recognition (default 10.0). Clips shorter than this get ASR only.")
-        public var minDuration: Double = 10.0
+        @Option(name: .long, help: "Minimum clip duration in seconds to run diarization (default 1.0). Clips shorter than this get ASR only.")
+        public var minDuration: Double = 1.0
+
+        @Option(name: .long, help: "Minimum clip duration in seconds to enroll new speakers (default 10.0). Shorter clips are diarized and matched against existing speakers but will not create new registry entries.")
+        public var minEnrollmentDuration: Double = 10.0
 
         @Option(name: .long, help: "Language hint for ASR transcription (e.g. 'english', 'chinese', 'japanese'). Skips in-model detection when provided.")
         public var language: String?
@@ -86,7 +89,7 @@ extension SessionCommand {
 
                 print("Processing...")
                 let start = Date()
-                let result = try await pipeline.process(audioURL: url, audio: audio, minimumDurationForRecognition: minDuration, language: language)
+                let result = try await pipeline.process(audioURL: url, audio: audio, minimumDurationForDiarization: minDuration, minimumDurationForEnrollment: minEnrollmentDuration, language: language)
                 let elapsed = Date().timeIntervalSince(start)
 
                 if json {

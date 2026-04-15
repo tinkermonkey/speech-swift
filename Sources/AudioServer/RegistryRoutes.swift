@@ -16,19 +16,23 @@ extension AudioServer {
 
         // MARK: Sessions
 
-        // POST /registry/sessions[?threshold=0.65][&min_duration=10.0][&language=english]
+        // POST /registry/sessions[?threshold=0.65][&min_duration=1.0][&min_enrollment_duration=10.0][&language=english]
         // Body: raw WAV bytes or multipart/form-data with a "file" field.
         // Diarizes the audio, resolves speakers against the registry, and returns the result.
         //
         // Query params:
-        //   threshold    – cosine similarity override (default: registry default, 0.75)
-        //   min_duration – clips shorter than this (seconds) skip speaker recognition entirely;
-        //                  ASR still runs. Default: 10.0 s. Set to 0 to disable the guard.
-        //   language     – language hint passed to Qwen3-ASR (e.g. "english", "chinese",
-        //                  "japanese"). Omit to let the model auto-detect.
+        //   threshold               – cosine similarity override (default: registry default, 0.75)
+        //   min_duration            – clips shorter than this (seconds) skip diarization entirely;
+        //                             ASR still runs. Default: 1.0 s.
+        //   min_enrollment_duration – clips shorter than this (seconds) run diarization and match
+        //                             against existing speakers but will not enroll new ones.
+        //                             Default: 10.0 s.
+        //   language                – language hint passed to Qwen3-ASR (e.g. "english", "chinese",
+        //                             "japanese"). Omit to let the model auto-detect.
         group.post("sessions") { request, context in
             let threshold = request.uri.queryParameters.get("threshold").flatMap(Float.init)
-            let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 10.0
+            let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 1.0
+            let minEnrollmentDuration = request.uri.queryParameters.get("min_enrollment_duration").flatMap(Double.init) ?? 10.0
             let language = request.uri.queryParameters.get("language")
             do {
                 let tRequest = ContinuousClock.now
@@ -81,7 +85,8 @@ extension AudioServer {
                         audioURL: tmpURL,
                         audio: audio,
                         threshold: threshold,
-                        minimumDurationForRecognition: minDuration,
+                        minimumDurationForDiarization: minDuration,
+                        minimumDurationForEnrollment: minEnrollmentDuration,
                         language: language,
                         requestID: context.id)
                 }

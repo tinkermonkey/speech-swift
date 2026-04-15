@@ -104,21 +104,26 @@ public struct PipelineSession: @unchecked Sendable {
     ///   - audio: Float32 PCM at 16 kHz.
     ///   - config: Diarization hyper-parameters.
     ///   - threshold: Cosine similarity override for this request.
-    ///   - minimumDurationForRecognition: Clips shorter than this (seconds) skip diarization
-    ///     and registry entirely. ASR still runs if a model is available. Defaults to 10 s.
+    ///   - minimumDurationForDiarization: Clips shorter than this (seconds) skip diarization
+    ///     and registry entirely — the diarizer needs a minimum of audio to produce useful
+    ///     embeddings. ASR still runs if a model is available. Defaults to 1 s.
+    ///   - minimumDurationForEnrollment: Clips shorter than this (seconds) run diarization
+    ///     and match against existing registry speakers, but will not create new speaker
+    ///     entries. Use this to identify known speakers in short clips without polluting
+    ///     the registry with low-confidence new identities. Defaults to 10 s.
     ///   - language: Optional language hint passed to Qwen3-ASR (e.g. `"english"`, `"chinese"`).
     ///     When provided, skips in-model language detection — improves accuracy and reduces
     ///     compute on short or noisy segments. `nil` lets the model auto-detect.
     /// - Returns: A `ProcessedSession` with registry-resolved speaker identities
     ///   and, if an ASR model was provided, per-segment transcripts.
-    ///   `AnnotatedSegment.speaker` is `nil` when the clip was too short or no
-    ///   registered speaker matched.
+    ///   `AnnotatedSegment.speaker` is `nil` when no registered speaker matched.
     public func process(
         audioURL: URL,
         audio: [Float],
         config: DiarizationConfig = .default,
         threshold: Float? = nil,
-        minimumDurationForRecognition: Double = 10.0,
+        minimumDurationForDiarization: Double = 1.0,
+        minimumDurationForEnrollment: Double = 10.0,
         language: String? = nil,
         requestID: String? = nil
     ) async throws -> ProcessedSession {
@@ -128,17 +133,22 @@ public struct PipelineSession: @unchecked Sendable {
         let t0 = ContinuousClock.now
 
         // ── Short-clip guard ─────────────────────────────────────────────────
-        // Clips below the minimum are not suitable for speaker recognition.
-        // Skip diarization and registry entirely to avoid polluting the registry
-        // with low-confidence identities. ASR still runs if available.
-        if durationSeconds < minimumDurationForRecognition {
-            AudioLog.pipeline.info("\(tag)Clip too short for speaker recognition (\(String(format: "%.1f", durationSeconds))s < \(minimumDurationForRecognition)s) — ASR only")
+        // Clips below the diarization minimum cannot produce reliable speaker
+        // embeddings. Skip diarization and registry entirely; ASR still runs.
+        if durationSeconds < minimumDurationForDiarization {
+            AudioLog.pipeline.info("\(tag)Clip too short for diarization (\(String(format: "%.1f", durationSeconds))s < \(minimumDurationForDiarization)s) — ASR only")
             let regSize = await registry.centroidCount
             return try await asrOnlySession(audio: audio, sampleRate: sampleRate, durationSeconds: durationSeconds, language: language, regSize: regSize, t0: t0)
         }
 
+        // ── Enrollment mode ───────────────────────────────────────────────────
+        // Clips below the enrollment threshold are diarized and matched against
+        // existing speakers but will not create new registry entries.
+        let canEnroll = durationSeconds >= minimumDurationForEnrollment
+        let enrollNote = canEnroll ? "" : " (match-only, clip < \(String(format: "%.0f", minimumDurationForEnrollment))s enrollment threshold)"
+
         // ── Full pipeline ────────────────────────────────────────────────────
-        AudioLog.pipeline.info("\(tag)Diarizing \(String(format: "%.2f", durationSeconds))s (\(audio.count) samples)")
+        AudioLog.pipeline.info("\(tag)Diarizing \(String(format: "%.2f", durationSeconds))s (\(audio.count) samples)\(enrollNote)")
         let diarResult = diarizer.diarize(audio: audio, sampleRate: sampleRate, config: config)
         let diarMs = Int(elapsedMs(from: t0))
         AudioLog.pipeline.info("\(tag)Diarization done: \(diarResult.segments.count) segs, \(diarResult.speakerEmbeddings.count) speakers (\(diarMs)ms)")
@@ -149,21 +159,26 @@ public struct PipelineSession: @unchecked Sendable {
         let speakerCountBefore = await registry.speakerCount
         var localToRegistry: [Int: Speaker?] = [:]
         for (localId, embedding) in diarResult.speakerEmbeddings.enumerated() {
-            let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
-            let bestQuality = speakerSegs.map(\.duration).max().map(Double.init) ?? 0.0
-
-            // resolve() creates new speakers only for high-quality (≥ 2s) segments.
-            // Low-quality segments with no match return nil rather than a placeholder.
-            let speaker = try await registry.resolve(
-                embedding: embedding,
-                qualityScore: bestQuality,
-                threshold: threshold)
+            let speaker: Speaker?
+            if canEnroll {
+                let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
+                let bestQuality = speakerSegs.map(\.duration).max().map(Double.init) ?? 0.0
+                // resolve() creates new speakers only for high-quality (≥ 2s) segments.
+                // Low-quality segments with no match return nil rather than a placeholder.
+                speaker = try await registry.resolve(
+                    embedding: embedding,
+                    qualityScore: bestQuality,
+                    threshold: threshold)
+            } else {
+                // Match-only: identify known speakers without touching the registry.
+                speaker = await registry.match(embedding: embedding, threshold: threshold)
+            }
             localToRegistry[localId] = speaker
         }
         let resolveMs = Int(elapsedMs(from: tResolve))
         // max(0,...) guards against an unlikely underflow if a speaker was concurrently
         // deleted via the DELETE /registry/speakers/:id endpoint during inference.
-        let enrolled = max(0, await registry.speakerCount - speakerCountBefore)
+        let enrolled = canEnroll ? max(0, await registry.speakerCount - speakerCountBefore) : 0
         AudioLog.pipeline.info("\(tag)Registry resolve done: reg_size=\(regSizeBefore) enrolled=\(enrolled) (\(resolveMs)ms)")
 
         // Build annotated output
