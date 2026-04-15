@@ -61,6 +61,9 @@ actor InferenceSemaphore {
         }
     }
 
+    /// Number of tasks currently waiting to acquire a permit.
+    var waitingCount: Int { waiters.count }
+
     /// Run `body` with a permit held, releasing it when `body` returns or throws.
     /// Throws `CancellationError` if the calling task was cancelled while waiting.
     func withPermit<T: Sendable>(_ body: () async throws -> T) async throws -> T {

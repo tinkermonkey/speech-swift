@@ -41,6 +41,9 @@ extension SessionCommand {
         @Option(name: .long, help: "Minimum clip duration in seconds for speaker recognition (default 10.0). Clips shorter than this get ASR only.")
         public var minDuration: Double = 10.0
 
+        @Option(name: .long, help: "Language hint for ASR transcription (e.g. 'english', 'chinese', 'japanese'). Skips in-model detection when provided.")
+        public var language: String?
+
         @Flag(name: .long, help: "Transcribe each segment using Qwen3-ASR")
         public var transcribe: Bool = false
 
@@ -83,7 +86,7 @@ extension SessionCommand {
 
                 print("Processing...")
                 let start = Date()
-                let result = try await pipeline.process(audioURL: url, audio: audio, minimumDurationForRecognition: minDuration)
+                let result = try await pipeline.process(audioURL: url, audio: audio, minimumDurationForRecognition: minDuration, language: language)
                 let elapsed = Date().timeIntervalSince(start)
 
                 if json {

@@ -3,6 +3,11 @@ import MLXCommon
 import MLX
 import AudioCommon
 
+private func diarElapsedMs(from start: ContinuousClock.Instant) -> Int {
+    let d = ContinuousClock.now - start
+    return Int(Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15)
+}
+
 // MARK: - Configuration
 
 /// Configuration for speaker diarization thresholds.
@@ -40,6 +45,28 @@ public struct DiarizationConfig: Sendable {
 
 // MARK: - Result
 
+/// Wall-clock breakdown of the three diarization sub-phases (milliseconds).
+///
+/// Use these to distinguish GPU-bound work (segmentation, embedding) from
+/// CPU-bound work (clustering). Spikes in `segmentMs`/`embedMs` point to
+/// GPU memory pressure or thermal throttle; spikes in `clusterMs` point to
+/// O(n²) clustering cost from many concurrent speakers.
+public struct DiarizationTimings: Sendable {
+    /// GPU: pyannote segmentation model across all sliding windows.
+    public let segmentMs: Int
+    /// GPU: WeSpeaker embedding calls across all windows × speakers.
+    public let embedMs: Int
+    /// CPU: constrained agglomerative clustering.
+    public let clusterMs: Int
+    /// Number of 10s sliding windows processed.
+    public let windowCount: Int
+    /// Number of individual embedding calls made (windows × active speakers).
+    public let embedCount: Int
+
+    public static let zero = DiarizationTimings(
+        segmentMs: 0, embedMs: 0, clusterMs: 0, windowCount: 0, embedCount: 0)
+}
+
 /// Result of speaker diarization.
 public struct DiarizationResult: Sendable {
     /// Diarized speech segments with speaker IDs
@@ -48,11 +75,19 @@ public struct DiarizationResult: Sendable {
     public let numSpeakers: Int
     /// Centroid embedding for each speaker (speaker ID → 256-dim embedding)
     public let speakerEmbeddings: [[Float]]
+    /// Per-phase timing breakdown for performance diagnostics.
+    public let timings: DiarizationTimings
 
-    public init(segments: [DiarizedSegment], numSpeakers: Int, speakerEmbeddings: [[Float]]) {
+    public init(
+        segments: [DiarizedSegment],
+        numSpeakers: Int,
+        speakerEmbeddings: [[Float]],
+        timings: DiarizationTimings = .zero
+    ) {
         self.segments = segments
         self.numSpeakers = numSpeakers
         self.speakerEmbeddings = speakerEmbeddings
+        self.timings = timings
     }
 }
 
@@ -294,6 +329,7 @@ public final class PyannoteDiarizationPipeline {
 
         // Step 1: Run segmentation on all windows, collect probability tracks
         var windowProbs = [WindowProbs]()
+        let tSegStart = ContinuousClock.now
 
         for (start, end) in positions {
             var window = Array(samples[start..<end])
@@ -312,14 +348,20 @@ public final class PyannoteDiarizationPipeline {
             }
             windowProbs.append(WindowProbs(startSample: start, endSample: end, tracks: tracks))
         }
+        let segmentMs = diarElapsedMs(from: tSegStart)
 
         guard !windowProbs.isEmpty else {
-            return DiarizationResult(segments: [], numSpeakers: 0, speakerEmbeddings: [])
+            return DiarizationResult(
+                segments: [], numSpeakers: 0, speakerEmbeddings: [],
+                timings: DiarizationTimings(
+                    segmentMs: segmentMs, embedMs: 0, clusterMs: 0,
+                    windowCount: positions.count, embedCount: 0))
         }
 
         // Step 2: Extract per-window per-speaker embeddings from non-overlapping speech
         let minEmbeddingSamples = sampleRate / 2  // 0.5s minimum for embedding
         var windowEmbeddings = [WindowSpeakerEmbedding]()
+        let tEmbedStart = ContinuousClock.now
 
         for (wIdx, wp) in windowProbs.enumerated() {
             let windowStartSample = wp.startSample
@@ -372,10 +414,15 @@ public final class PyannoteDiarizationPipeline {
                     windowIndex: wIdx, localSpeakerId: localSpk, embedding: embedding))
             }
         }
+        let embedMs = diarElapsedMs(from: tEmbedStart)
 
         // Handle edge case: no embeddings could be extracted
         guard !windowEmbeddings.isEmpty else {
-            return DiarizationResult(segments: [], numSpeakers: 0, speakerEmbeddings: [])
+            return DiarizationResult(
+                segments: [], numSpeakers: 0, speakerEmbeddings: [],
+                timings: DiarizationTimings(
+                    segmentMs: segmentMs, embedMs: embedMs, clusterMs: 0,
+                    windowCount: positions.count, embedCount: 0))
         }
 
         // Step 3: Constrained agglomerative clustering
@@ -385,9 +432,11 @@ public final class PyannoteDiarizationPipeline {
                 localSpeakerId: $0.localSpeakerId,
                 embedding: $0.embedding)
         }
+        let tClusterStart = ContinuousClock.now
 
         let (clusterAssignment, centroids) = DiarizationHelpers.constrainedAgglomerativeClustering(
             items: clusterItems, threshold: config.clusteringThreshold)
+        let clusterMs = diarElapsedMs(from: tClusterStart)
 
         // Build mapping: (windowIndex, localSpeakerId) → global cluster ID
         var localToGlobal = [Int: [Int: Int]]()  // windowIndex → (localSpeakerId → globalId)
@@ -478,8 +527,13 @@ public final class PyannoteDiarizationPipeline {
         return DiarizationResult(
             segments: merged,
             numSpeakers: numSpeakers,
-            speakerEmbeddings: finalCentroids
-        )
+            speakerEmbeddings: finalCentroids,
+            timings: DiarizationTimings(
+                segmentMs: segmentMs,
+                embedMs: embedMs,
+                clusterMs: clusterMs,
+                windowCount: positions.count,
+                embedCount: windowEmbeddings.count))
     }
 
     /// Trim a segment to intersect with speech regions.

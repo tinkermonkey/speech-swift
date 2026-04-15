@@ -2,6 +2,11 @@ import Foundation
 import AudioCommon
 import os
 
+private func registryElapsedMs(from start: ContinuousClock.Instant) -> Int {
+    let d = ContinuousClock.now - start
+    return Int(Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15)
+}
+
 // MARK: - In-Memory Store
 
 private struct RegistryStore {
@@ -112,6 +117,15 @@ public actor SpeakerRegistry {
         self.centroidsDir = centroidsDir
         self.similarityThreshold = threshold
     }
+
+    // MARK: - Observability
+
+    /// Number of centroids currently held in memory. Grows with each enrollment.
+    /// Linear scan in `bestMatch()` is O(centroidCount) per embedding.
+    public var centroidCount: Int { store.centroids.count }
+
+    /// Number of registered speakers.
+    public var speakerCount: Int { store.speakers.count }
 
     // MARK: - Resolve / Match
 
@@ -257,19 +271,33 @@ public actor SpeakerRegistry {
     // MARK: - Private Helpers
 
     private func bestMatch(embedding: [Float], threshold: Float) -> (Speaker, Float)? {
-        var best: (Int64, Float)?
+        var best: (speakerId: Int64, sim: Float)?
+        var secondBestSim: Float = 0
+
         for c in store.centroids {
             let sim = cosineSimilarity(embedding, c.centroid)
-            if sim > threshold, sim > (best?.1 ?? 0) {
+            if sim > (best?.sim ?? 0) {
+                if let prev = best { secondBestSim = prev.sim }
                 best = (c.speakerId, sim)
+            } else if sim > secondBestSim {
+                secondBestSim = sim
             }
         }
-        guard let (speakerId, sim) = best else { return nil }
-        if let speaker = store.speakers.first(where: { $0.id == speakerId }) {
-            return (speaker, sim)
+
+        let regSize = store.centroids.count
+        guard let (speakerId, sim) = best, sim > threshold else {
+            AudioLog.pipeline.debug("Registry: no match (best=\(String(format: "%.3f", best?.sim ?? 0)) threshold=\(String(format: "%.3f", threshold)) reg_size=\(regSize))")
+            return nil
         }
-        AudioLog.pipeline.warning("Registry: centroid references speaker \(speakerId) not found in store — data may be inconsistent")
-        return nil
+
+        guard let speaker = store.speakers.first(where: { $0.id == speakerId }) else {
+            AudioLog.pipeline.warning("Registry: centroid references speaker \(speakerId) not found in store — data may be inconsistent")
+            return nil
+        }
+
+        let margin = sim - secondBestSim
+        AudioLog.pipeline.debug("Registry: matched \(speaker.label) sim=\(String(format: "%.3f", sim)) runner_up=\(String(format: "%.3f", secondBestSim)) margin=\(String(format: "%.3f", margin)) reg_size=\(regSize))")
+        return (speaker, sim)
     }
 
     private func mintPlaceholder() -> Speaker {
@@ -301,8 +329,13 @@ public actor SpeakerRegistry {
         let metadata = MetadataStore(speakers: store.speakers, nextId: store.nextId)
         do {
             let data = try encoder.encode(metadata)
+            let tWrite = ContinuousClock.now
             try data.write(to: metadataURL, options: .atomic)
-            AudioLog.pipeline.debug("Metadata saved: \(self.store.speakers.count) speaker(s)")
+            let writeMs = registryElapsedMs(from: tWrite)
+            AudioLog.pipeline.debug("Metadata saved: \(self.store.speakers.count) speaker(s) io=\(writeMs)ms")
+            if writeMs > 50 {
+                AudioLog.pipeline.warning("Registry: metadata write slow (\(writeMs)ms) — filesystem contention?")
+            }
         } catch {
             AudioLog.pipeline.error("Metadata save failed: \(error)")
             throw error
@@ -316,8 +349,13 @@ public actor SpeakerRegistry {
         withUnsafeBytes(of: &sampleCount) { data.append(contentsOf: $0) }
         centroid.centroid.withUnsafeBytes { data.append(contentsOf: $0) }
         do {
+            let tWrite = ContinuousClock.now
             try data.write(to: url, options: .atomic)
-            AudioLog.pipeline.debug("Centroid saved: speaker \(centroid.speakerId), \(centroid.sampleCount) sample(s)")
+            let writeMs = registryElapsedMs(from: tWrite)
+            AudioLog.pipeline.debug("Centroid saved: speaker \(centroid.speakerId), \(centroid.sampleCount) sample(s) io=\(writeMs)ms")
+            if writeMs > 50 {
+                AudioLog.pipeline.warning("Registry: centroid write slow (\(writeMs)ms) for speaker \(centroid.speakerId) — filesystem contention?")
+            }
         } catch {
             AudioLog.pipeline.error("Centroid save failed for speaker \(centroid.speakerId): \(error)")
             throw error

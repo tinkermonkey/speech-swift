@@ -16,7 +16,7 @@ extension AudioServer {
 
         // MARK: Sessions
 
-        // POST /registry/sessions[?threshold=0.65][&min_duration=10.0]
+        // POST /registry/sessions[?threshold=0.65][&min_duration=10.0][&language=english]
         // Body: raw WAV bytes or multipart/form-data with a "file" field.
         // Diarizes the audio, resolves speakers against the registry, and returns the result.
         //
@@ -24,10 +24,15 @@ extension AudioServer {
         //   threshold    – cosine similarity override (default: registry default, 0.75)
         //   min_duration – clips shorter than this (seconds) skip speaker recognition entirely;
         //                  ASR still runs. Default: 10.0 s. Set to 0 to disable the guard.
+        //   language     – language hint passed to Qwen3-ASR (e.g. "english", "chinese",
+        //                  "japanese"). Omit to let the model auto-detect.
         group.post("sessions") { request, context in
             let threshold = request.uri.queryParameters.get("threshold").flatMap(Float.init)
             let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 10.0
+            let language = request.uri.queryParameters.get("language")
             do {
+                let tRequest = ContinuousClock.now
+
                 let body = try await request.body.collect(upTo: 100 * 1024 * 1024)
                 let audioData = try extractAudioData(from: body, contentType: request.headers[.contentType])
 
@@ -37,9 +42,19 @@ extension AudioServer {
                 try Data(buffer: audioData).write(to: tmpURL)
 
                 let audio = try AudioFileLoader.load(url: tmpURL, targetSampleRate: 16000)
+                let audioLoadMs = sessionElapsedMs(from: tRequest)
+                let audioDurationS = Double(audio.count) / 16000.0
+
                 let diarizer = try await self.state.loadDiarizer()
                 let asr = try await self.state.loadASR()
                 let pipeline = PipelineSession(diarizer: diarizer, registry: registry, asr: asr)
+
+                // Snapshot queue depth at arrival. Thermal state is captured later, inside
+                // the semaphore, to reflect the system state when inference actually runs
+                // rather than when the request was queued (which may be tens of seconds earlier).
+                let queueDepthOnArrival = await self.inferenceSemaphore.waitingCount
+                let tQueueStart = ContinuousClock.now
+
                 // Release MLX intermediate buffers after inference (success or error).
                 // Without this the buffer pool grows unboundedly across sessions.
                 defer {
@@ -50,14 +65,31 @@ extension AudioServer {
                         context.logger.debug("MLX cache cleared: \(cacheBefore / 1024 / 1024)MB → \(cacheAfter / 1024 / 1024)MB (active: \(Memory.activeMemory / 1024 / 1024)MB)")
                     }
                 }
+                var queueWaitMs = 0
+                var mlxActiveMBAtStart = 0
+                var mlxCacheMBAtStart = 0
+                var thermalLabel = "nominal"
                 let result = try await self.inferenceSemaphore.withPermit {
-                    try await pipeline.process(
+                    queueWaitMs = sessionElapsedMs(from: tQueueStart)
+                    // Snapshot thermal state and MLX memory at the moment inference begins
+                    // (semaphore acquired). Thermal reflects actual inference conditions, not
+                    // queue-wait conditions. High active memory correlates with GPU buffer eviction.
+                    thermalLabel = thermalStateLabel()
+                    mlxActiveMBAtStart = Int(Memory.activeMemory / 1024 / 1024)
+                    mlxCacheMBAtStart = Int(Memory.cacheMemory / 1024 / 1024)
+                    return try await pipeline.process(
                         audioURL: tmpURL,
                         audio: audio,
                         threshold: threshold,
                         minimumDurationForRecognition: minDuration,
+                        language: language,
                         requestID: context.id)
                 }
+
+                let t = result.timings
+                let d = t.diarize
+                let logMsg = "[\(context.id)][\(currentThreadTag)] audio_load=\(audioLoadMs)ms queue_wait=\(queueWaitMs)ms thermal=\(thermalLabel) mlx_active=\(mlxActiveMBAtStart)MB mlx_cache=\(mlxCacheMBAtStart)MB seg=\(d.segmentMs)ms emb=\(d.embedMs)ms cluster=\(d.clusterMs)ms wins=\(d.windowCount) embeds=\(d.embedCount) resolve=\(t.resolveMs)ms reg_size=\(t.regSize) enrolled=\(t.enrolled) asr=\(t.asrMs)ms segs=\(t.segCount) inference=\(t.totalMs)ms audio_dur=\(String(format: "%.1f", audioDurationS))s queue_depth=\(queueDepthOnArrival)"
+                context.logger.info("\(logMsg)")
 
                 return jsonResponse(ProcessedSessionResponse(result).json)
             } catch {
@@ -167,6 +199,23 @@ extension AudioServer {
         } catch {
             fatalError("Failed to open speaker registry at default path: \(error)")
         }
+    }
+}
+
+// MARK: - Timing / System Helpers
+
+private func sessionElapsedMs(from start: ContinuousClock.Instant) -> Int {
+    let d = ContinuousClock.now - start
+    return Int(Double(d.components.seconds) * 1000 + Double(d.components.attoseconds) / 1e15)
+}
+
+private func thermalStateLabel() -> String {
+    switch ProcessInfo.processInfo.thermalState {
+    case .nominal:  return "nominal"
+    case .fair:     return "fair"
+    case .serious:  return "serious"
+    case .critical: return "critical"
+    @unknown default: return "unknown"
     }
 }
 

@@ -60,6 +60,7 @@ public struct AudioServer {
     @discardableResult
     public func startKeepAlive(intervalSeconds: Double = 10.0) -> Task<Void, Never> {
         let state = self.state
+        let semaphore = self.inferenceSemaphore
         return Task {
             // 0.1 s of silence at 16 kHz — enough to dispatch the compute graph
             let silence = [Float](repeating: 0, count: 1600)
@@ -71,15 +72,24 @@ public struct AudioServer {
                 }
                 guard !Task.isCancelled else { break }
                 // Only warm up models that are already loaded; don't trigger a load.
-                // Check cancellation immediately before each blocking sync call — once
-                // inside transcribe/diarize the call cannot be interrupted.
-                if let asr = try? await state.loadedASR() {
-                    guard !Task.isCancelled else { break }
-                    _ = asr.transcribe(audio: silence, sampleRate: 16000, language: nil)
-                }
-                if let diarizer = try? await state.loadedDiarizer() {
-                    guard !Task.isCancelled else { break }
-                    _ = diarizer.diarize(audio: silence, sampleRate: 16000)
+                // Runs inside the inference semaphore to avoid racing with real requests
+                // on the shared GPU command queue — concurrent MLX calls run 4-7× slower.
+                // Skip keep-alive when callers are already waiting to avoid joining the queue
+                // behind a backlog. Note: there is a TOCTOU window between checking waitingCount
+                // and acquiring the permit — a request arriving in that window will wait behind
+                // the keep-alive for at most ~100ms (0.1s silence inference), which is acceptable.
+                let waiting = await semaphore.waitingCount
+                guard waiting == 0 else { continue }
+                try? await semaphore.withPermit {
+                    guard !Task.isCancelled else { return }
+                    if let asr = try? await state.loadedASR() {
+                        guard !Task.isCancelled else { return }
+                        _ = asr.transcribe(audio: silence, sampleRate: 16000, language: nil)
+                    }
+                    if let diarizer = try? await state.loadedDiarizer() {
+                        guard !Task.isCancelled else { return }
+                        _ = diarizer.diarize(audio: silence, sampleRate: 16000)
+                    }
                 }
             }
         }
