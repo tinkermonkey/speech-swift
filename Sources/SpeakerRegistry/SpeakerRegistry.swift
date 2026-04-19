@@ -133,14 +133,16 @@ public actor SpeakerRegistry {
     /// Use this on the fast path (short clips) where you want to identify a known
     /// speaker but must not pollute the registry with unconfirmed identities.
     ///
-    /// - Returns: The best-matching `Speaker`, or `nil` if no speaker meets the threshold.
-    public func match(embedding: [Float], threshold: Float? = nil) -> Speaker? {
+    /// - Returns: The best-matching `Speaker` (nil if below threshold) and the top candidate's
+    ///   cosine similarity score (nil only if the registry is empty).
+    public func match(embedding: [Float], threshold: Float? = nil) -> (speaker: Speaker?, score: Float?) {
         let effectiveThreshold = threshold ?? similarityThreshold
+        let score = topSimilarity(embedding: embedding)
         guard let (speaker, similarity) = bestMatch(embedding: embedding, threshold: effectiveThreshold) else {
-            return nil
+            return (nil, score)
         }
         AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(String(format: "%.3f", similarity)))")
-        return speaker
+        return (speaker, similarity)
     }
 
     /// Resolve a fresh embedding to a speaker identity, enrolling a new speaker if needed.
@@ -153,17 +155,19 @@ public actor SpeakerRegistry {
     /// - Parameters:
     ///   - embedding: 256-dim L2-normalised WeSpeaker embedding.
     ///   - qualityScore: Longest segment duration in seconds for this speaker in the clip.
-    /// - Returns: The matched or newly enrolled `Speaker`, or `nil` if quality is too low to enroll.
-    public func resolve(embedding: [Float], qualityScore: Double, threshold: Float? = nil) throws -> Speaker? {
+    /// - Returns: The matched or newly enrolled `Speaker` and the top candidate's cosine similarity
+    ///   score (nil only if the registry is empty or the speaker was newly enrolled with no prior match).
+    public func resolve(embedding: [Float], qualityScore: Double, threshold: Float? = nil) throws -> (speaker: Speaker?, score: Float?) {
         let isHighQuality = qualityScore >= 2.0
         let effectiveThreshold = threshold ?? similarityThreshold
+        let topScore = topSimilarity(embedding: embedding)
 
         if let (speaker, similarity) = bestMatch(embedding: embedding, threshold: effectiveThreshold) {
             AudioLog.pipeline.debug("Matched \(speaker.label) (cosine=\(String(format: "%.3f", similarity)))")
             if isHighQuality {
                 guard embedding.allSatisfy({ $0.isFinite }) else {
                     AudioLog.pipeline.warning("Skipped centroid update for \(speaker.label): embedding contains NaN/Inf")
-                    return speaker
+                    return (speaker, similarity)
                 }
                 updateCentroid(speakerId: speaker.id!, with: embedding)
                 if let updated = store.centroids.first(where: { $0.speakerId == speaker.id! }) {
@@ -172,25 +176,25 @@ public actor SpeakerRegistry {
                     AudioLog.pipeline.warning("Registry: centroid missing after update for speaker \(speaker.id!); not saved")
                 }
             }
-            return speaker
+            return (speaker, similarity)
         } else if isHighQuality {
             // High-quality segment with no match → enroll as new speaker.
             let speaker = mintPlaceholder()
             guard embedding.allSatisfy({ $0.isFinite }) else {
                 AudioLog.pipeline.warning("Skipped centroid enrolment for \(speaker.label): embedding contains NaN/Inf")
                 try saveMetadata()
-                return speaker
+                return (speaker, topScore)
             }
             let centroid = SpeakerCentroid(speakerId: speaker.id!, centroid: normalizeL2(embedding))
             store.centroids.append(centroid)
             try saveCentroid(centroid)  // centroid first — if this fails, speaker is not persisted
             try saveMetadata()
             AudioLog.pipeline.debug("Enrolled new \(speaker.label)")
-            return speaker
+            return (speaker, topScore)
         } else {
             // Low-quality segment with no match → do not create a placeholder.
             AudioLog.pipeline.debug("No match for low-quality segment (\(String(format: "%.1f", qualityScore))s), skipping enrollment")
-            return nil
+            return (nil, topScore)
         }
     }
 
@@ -239,6 +243,36 @@ public actor SpeakerRegistry {
         store.speakers.first(where: { $0.id == id })
     }
 
+    /// Returns other speakers ranked by centroid similarity to `id`, for merge candidate discovery.
+    ///
+    /// - Parameters:
+    ///   - id: The reference speaker.
+    ///   - limit: Maximum number of candidates to return.
+    ///   - minSimilarity: Floor similarity — candidates below this are excluded.
+    ///     Defaults to 0.5, intentionally below the enrollment threshold (0.75) to surface
+    ///     near-duplicate speakers that didn't auto-merge.
+    /// - Returns: Candidates sorted by descending similarity, or throws if `id` has no centroid.
+    public func similarSpeakers(
+        to id: Int64,
+        limit: Int = 10,
+        minSimilarity: Float = 0.5
+    ) throws -> [(speaker: Speaker, similarity: Float, sampleCount: Int)] {
+        guard let target = store.centroids.first(where: { $0.speakerId == id }) else {
+            throw RegistryError.speakerNotFound(id)
+        }
+        var candidates: [(speaker: Speaker, similarity: Float, sampleCount: Int)] = []
+        for centroid in store.centroids where centroid.speakerId != id {
+            let sim = cosineSimilarity(target.centroid, centroid.centroid)
+            guard sim >= minSimilarity else { continue }
+            guard let speaker = store.speakers.first(where: { $0.id == centroid.speakerId }) else { continue }
+            candidates.append((speaker, sim, centroid.sampleCount))
+        }
+        return candidates
+            .sorted { $0.similarity > $1.similarity }
+            .prefix(limit)
+            .map { $0 }
+    }
+
     // MARK: - Mutations
 
     public func updateNotes(speakerId: Int64, notes: String) throws {
@@ -268,6 +302,12 @@ public actor SpeakerRegistry {
     }
 
     // MARK: - Private Helpers
+
+    /// Returns the raw top cosine similarity against all centroids, ignoring threshold.
+    /// `nil` only when the registry is empty.
+    private func topSimilarity(embedding: [Float]) -> Float? {
+        store.centroids.map { cosineSimilarity(embedding, $0.centroid) }.max()
+    }
 
     private func bestMatch(embedding: [Float], threshold: Float) -> (Speaker, Float)? {
         var best: (speakerId: Int64, sim: Float)?

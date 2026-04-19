@@ -29,10 +29,10 @@ extension AudioServer {
         //                             Default: 10.0 s.
         //   language                – language hint passed to Qwen3-ASR (e.g. "english", "chinese",
         //                             "japanese"). Omit to let the model auto-detect.
-        group.post("sessions") { request, context in
+        group.post("sessions") { [config = self.config] request, context in
             let threshold = request.uri.queryParameters.get("threshold").flatMap(Float.init)
-            let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? 1.0
-            let minEnrollmentDuration = request.uri.queryParameters.get("min_enrollment_duration").flatMap(Double.init) ?? 10.0
+            let minDuration = request.uri.queryParameters.get("min_duration").flatMap(Double.init) ?? config.minimumDurationForDiarization
+            let minEnrollmentDuration = request.uri.queryParameters.get("min_enrollment_duration").flatMap(Double.init) ?? config.minimumDurationForEnrollment
             let language = request.uri.queryParameters.get("language")
             guard minDuration <= minEnrollmentDuration else {
                 return errorResponse(
@@ -130,6 +130,37 @@ extension AudioServer {
             }
         }
 
+        // GET /registry/speakers/:id/similar[?limit=10][&min_similarity=0.5]
+        // Returns speakers ranked by centroid similarity to :id — merge candidates.
+        group.get("speakers/:id/similar") { request, context in
+            do {
+                let id = try requireInt64(context.parameters.get("id"))
+                let limit = request.uri.queryParameters.get("limit").flatMap(Int.init) ?? 10
+                let minSimilarity = request.uri.queryParameters.get("min_similarity").flatMap(Float.init) ?? 0.5
+                let candidates = try await registry.similarSpeakers(to: id, limit: limit, minSimilarity: minSimilarity)
+                let json: [String: Any] = [
+                    "speaker_id": id,
+                    "candidates": candidates.map { c -> [String: Any] in
+                        var d: [String: Any] = [
+                            "id": c.speaker.id ?? -1,
+                            "label": c.speaker.label,
+                            "is_labeled": c.speaker.isLabeled,
+                            "similarity": Double(String(format: "%.4f", c.similarity))!,
+                            "sample_count": c.sampleCount,
+                        ]
+                        if let name = c.speaker.displayName { d["display_name"] = name }
+                        return d
+                    }
+                ]
+                return jsonResponse(json)
+            } catch let err as RegistryError {
+                return errorResponse("\(err)", status: .notFound)
+            } catch {
+                context.logger.error("GET /registry/speakers/:id/similar error: \(error)")
+                throw error
+            }
+        }
+
         // PATCH /registry/speakers/:id
         // Body: { "displayName": "Alice", "notes": "..." }
         group.patch("speakers/:id") { request, context in
@@ -205,7 +236,7 @@ extension AudioServer {
 
     private func openOrCreateRegistry() -> SpeakerRegistry {
         do {
-            return try SpeakerRegistry.open(similarityThreshold: 0.75)
+            return try SpeakerRegistry.open(similarityThreshold: config.similarityThreshold)
         } catch {
             fatalError("Failed to open speaker registry at default path: \(error)")
         }
@@ -243,6 +274,7 @@ private struct ProcessedSessionResponse {
                 var d: [String: Any] = [
                     "speaker_id": seg.speaker.flatMap { $0.id }.map { $0 as Any } ?? NSNull(),
                     "speaker_label": seg.speaker.map { $0.label as Any } ?? NSNull(),
+                    "best_score": seg.bestScore.map { Double(String(format: "%.4f", $0))! as Any } ?? NSNull(),
                     "start": seg.startTime,
                     "end": seg.endTime,
                     "duration": seg.duration,

@@ -50,6 +50,10 @@ public struct ProcessedSession: Sendable {
 /// ASR model was provided.
 public struct AnnotatedSegment: Sendable {
     public let speaker: Speaker?
+    /// Top cosine similarity score against the registry (0–1), regardless of whether it
+    /// crossed the match threshold. `nil` only when the registry was empty or the clip
+    /// was too short for speaker recognition.
+    public let bestScore: Float?
     public let startTime: Double
     public let endTime: Double
     public let transcriptText: String?
@@ -164,27 +168,25 @@ public struct PipelineSession: @unchecked Sendable {
         let diarMs = Int(elapsedMs(from: t0))
         AudioLog.pipeline.info("\(tag)Diarization done: \(diarResult.segments.count) segs, \(diarResult.speakerEmbeddings.count) speakers (\(diarMs)ms)")
 
-        // Map local diarization speaker index → registry Speaker (nil if unidentifiable)
+        // Map local diarization speaker index → registry Speaker + match score (nil if unidentifiable)
         let tResolve = ContinuousClock.now
         let regSizeBefore = await registry.centroidCount
         let speakerCountBefore = await registry.speakerCount
-        var localToRegistry: [Int: Speaker?] = [:]
+        var localToRegistry: [Int: (speaker: Speaker?, score: Float?)] = [:]
         for (localId, embedding) in diarResult.speakerEmbeddings.enumerated() {
-            let speaker: Speaker?
             if canEnroll {
                 let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
                 let bestQuality = speakerSegs.map(\.duration).max().map(Double.init) ?? 0.0
                 // resolve() creates new speakers only for high-quality (≥ 2s) segments.
                 // Low-quality segments with no match return nil rather than a placeholder.
-                speaker = try await registry.resolve(
+                localToRegistry[localId] = try await registry.resolve(
                     embedding: embedding,
                     qualityScore: bestQuality,
                     threshold: threshold)
             } else {
                 // Match-only: identify known speakers without touching the registry.
-                speaker = await registry.match(embedding: embedding, threshold: threshold)
+                localToRegistry[localId] = await registry.match(embedding: embedding, threshold: threshold)
             }
-            localToRegistry[localId] = speaker
         }
         let resolveMs = Int(elapsedMs(from: tResolve))
         // max(0,...) guards against an unlikely underflow if a speaker was concurrently
@@ -196,7 +198,7 @@ public struct PipelineSession: @unchecked Sendable {
         let tASR = ContinuousClock.now
         var annotated: [AnnotatedSegment] = []
         for seg in diarResult.segments {
-            guard let speakerEntry = localToRegistry[seg.speakerId] else { continue }
+            guard let entry = localToRegistry[seg.speakerId] else { continue }
             let start = Double(seg.startTime)
             let end = Double(seg.endTime)
 
@@ -208,7 +210,8 @@ public struct PipelineSession: @unchecked Sendable {
             }
 
             annotated.append(AnnotatedSegment(
-                speaker: speakerEntry,
+                speaker: entry.speaker,
+                bestScore: entry.score,
                 startTime: start,
                 endTime: end,
                 transcriptText: transcript))
@@ -222,7 +225,7 @@ public struct PipelineSession: @unchecked Sendable {
         let totalMs = Int(elapsedMs(from: t0))
         let dt = diarResult.timings
         let asrNote = asr != nil ? " with transcription" : ""
-        let identified = localToRegistry.values.compactMap { $0 }.count
+        let identified = localToRegistry.values.filter { $0.speaker != nil }.count
         AudioLog.pipeline.info("\(tag)Resolved \(identified)/\(localToRegistry.count) speaker(s)\(asrNote) [seg=\(dt.segmentMs)ms emb=\(dt.embedMs)ms cluster=\(dt.clusterMs)ms wins=\(dt.windowCount) embeds=\(dt.embedCount) resolve=\(resolveMs)ms reg_size=\(regSizeBefore) enrolled=\(enrolled) asr=\(asrMs)ms segs=\(segCount) total=\(totalMs)ms]")
         return ProcessedSession(
             segments: annotated,
@@ -261,6 +264,7 @@ public struct PipelineSession: @unchecked Sendable {
         let totalMs = Int(elapsedMs(from: t0))
         let segment = AnnotatedSegment(
             speaker: nil,
+            bestScore: nil,
             startTime: 0,
             endTime: durationSeconds,
             transcriptText: transcript.isEmpty ? nil : transcript)

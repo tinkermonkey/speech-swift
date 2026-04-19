@@ -34,12 +34,19 @@ struct AudioServerCommand: AsyncParsableCommand {
     )
     var concurrency: Int = 1
 
+    @Option(
+        name: .long,
+        help: "Path to a JSON server config file. Overrides default model IDs and pipeline thresholds. Alternatively set the SERVER_CONFIG environment variable."
+    )
+    var config: String?
+
     @Flag(name: .long, help: "Log all incoming HTTP requests (method, path, status)")
     var logRequests: Bool = false
 
     func run() async throws {
         bootstrapLogging()
-        let server = AudioServer(host: host, port: port, logRequests: logRequests, concurrency: concurrency)
+        let serverConfig = try ServerConfig.load(from: config)
+        let server = AudioServer(host: host, port: port, logRequests: logRequests, concurrency: concurrency, config: serverConfig)
 
         if let preload {
             let models = Set(preload.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) })

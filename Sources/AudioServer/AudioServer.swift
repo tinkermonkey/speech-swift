@@ -16,14 +16,22 @@ import AudioCommon
 
 public struct AudioServer {
     let state: ModelState
+    let config: ServerConfig
     let host: String
     let port: Int
     let logRequests: Bool
     /// Gates concurrent GPU inference on /registry/sessions.
     let inferenceSemaphore: InferenceSemaphore
 
-    public init(host: String = "127.0.0.1", port: Int = 8080, logRequests: Bool = false, concurrency: Int = 1) {
-        self.state = ModelState()
+    public init(
+        host: String = "127.0.0.1",
+        port: Int = 8080,
+        logRequests: Bool = false,
+        concurrency: Int = 1,
+        config: ServerConfig = ServerConfig()
+    ) {
+        self.config = config
+        self.state = ModelState(config: config)
         self.host = host
         self.port = port
         self.logRequests = logRequests
@@ -279,6 +287,14 @@ public struct AudioServer {
 /// atomic (no suspension point between them), so no explicit locking is needed.
 actor ModelState {
 
+    // MARK: Config
+
+    private let config: ServerConfig
+
+    init(config: ServerConfig = ServerConfig()) {
+        self.config = config
+    }
+
     // MARK: Status
 
     enum ModelStatus: String {
@@ -327,9 +343,10 @@ actor ModelState {
     func loadASR() async throws -> Qwen3ASRModel {
         if let task = asrTask { return try await task.value }
         status["asr"] = .loading
+        let modelId = config.asrModelId
         let task = Task {
             do {
-                let m = try await Qwen3ASRModel.fromPretrained(progressHandler: logProgress)
+                let m = try await Qwen3ASRModel.fromPretrained(modelId: modelId, progressHandler: logProgress)
                 self.setStatus("asr", .ready)
                 return m
             } catch {
@@ -338,7 +355,7 @@ actor ModelState {
             }
         }
         asrTask = task
-        print("[server] Loading Qwen3-ASR...")
+        print("[server] Loading Qwen3-ASR (\(modelId))...")
         return try await task.value
     }
 
@@ -428,9 +445,18 @@ actor ModelState {
     func loadDiarizer() async throws -> DiarizationPipeline {
         if let task = diarizerTask { return try await task.value }
         status["diarizer"] = .loading
+        let segModelId = config.diarizationSegModelId
+        let embModelId = config.embeddingModelId
+        let embEngine = config.resolvedEmbeddingEngine
+        let useVADFilter = config.useVADFilter
         let task = Task {
             do {
-                let m = try await DiarizationPipeline.fromPretrained(progressHandler: logProgress)
+                let m = try await DiarizationPipeline.fromPretrained(
+                    segModelId: segModelId,
+                    embModelId: embModelId,
+                    embeddingEngine: embEngine,
+                    useVADFilter: useVADFilter,
+                    progressHandler: logProgress)
                 self.setStatus("diarizer", .ready)
                 return m
             } catch {
@@ -439,7 +465,7 @@ actor ModelState {
             }
         }
         diarizerTask = task
-        print("[server] Loading diarization pipeline...")
+        print("[server] Loading diarization pipeline (seg=\(segModelId) emb=\(embEngine.rawValue))...")
         return try await task.value
     }
 
