@@ -174,7 +174,13 @@ public struct PipelineSession: @unchecked Sendable {
         let speakerCountBefore = await registry.speakerCount
         var localToRegistry: [Int: (speaker: Speaker?, score: Float?)] = [:]
         for (localId, embedding) in diarResult.speakerEmbeddings.enumerated() {
-            if canEnroll {
+            let overlapRatio = localId < diarResult.speakerOverlapRatios.count
+                ? diarResult.speakerOverlapRatios[localId] : 0.0
+            let tooMuchOverlap = overlapRatio > 0.10
+            if tooMuchOverlap {
+                AudioLog.pipeline.info("\(tag)Speaker \(localId) overlap ratio \(String(format: "%.2f", overlapRatio)) > 0.10 — match-only (skipping enrollment)")
+            }
+            if canEnroll && !tooMuchOverlap {
                 let speakerSegs = diarResult.segments.filter { $0.speakerId == localId }
                 let bestQuality = speakerSegs.map(\.duration).max().map(Double.init) ?? 0.0
                 // resolve() creates new speakers only for high-quality (≥ 2s) segments.

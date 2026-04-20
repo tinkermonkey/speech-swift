@@ -23,15 +23,15 @@ public struct DiarizationConfig: Sendable {
     /// Minimum silence duration between segments in seconds
     public var minSilenceDuration: Float
     /// Cosine distance threshold for merging speaker clusters (0.0-2.0).
-    /// Lower = more merges (fewer speakers). Default 0.715.
+    /// Lower = fewer merges (more distinct speakers). Default 0.55.
     public var clusteringThreshold: Float
 
     public init(
-        onset: Float = 0.5,
+        onset: Float = 0.35,
         offset: Float = 0.3,
         minSpeechDuration: Float = 0.3,
         minSilenceDuration: Float = 0.15,
-        clusteringThreshold: Float = 0.715
+        clusteringThreshold: Float = 0.55
     ) {
         self.onset = onset
         self.offset = offset
@@ -75,6 +75,9 @@ public struct DiarizationResult: Sendable {
     public let numSpeakers: Int
     /// Centroid embedding for each speaker (speaker ID → 256-dim embedding)
     public let speakerEmbeddings: [[Float]]
+    /// Fraction of active frames with concurrent speaker activity, per speaker (0.0–1.0).
+    /// High values indicate the speaker's embedding was extracted from overlapping audio.
+    public let speakerOverlapRatios: [Float]
     /// Per-phase timing breakdown for performance diagnostics.
     public let timings: DiarizationTimings
 
@@ -82,11 +85,13 @@ public struct DiarizationResult: Sendable {
         segments: [DiarizedSegment],
         numSpeakers: Int,
         speakerEmbeddings: [[Float]],
+        speakerOverlapRatios: [Float] = [],
         timings: DiarizationTimings = .zero
     ) {
         self.segments = segments
         self.numSpeakers = numSpeakers
         self.speakerEmbeddings = speakerEmbeddings
+        self.speakerOverlapRatios = speakerOverlapRatios
         self.timings = timings
     }
 }
@@ -287,6 +292,8 @@ public final class PyannoteDiarizationPipeline {
         let windowIndex: Int
         let localSpeakerId: Int
         let embedding: [Float]
+        /// Fraction of this speaker's active frames that had concurrent activity from another speaker.
+        let overlapRatio: Float
     }
 
     /// Run diarization using per-window speaker embeddings + constrained agglomerative clustering.
@@ -378,12 +385,15 @@ public final class PyannoteDiarizationPipeline {
 
                 // Collect audio from frames where ONLY this speaker is active (non-overlapping)
                 var spkAudio = [Float]()
+                var totalActiveFrames = 0
+                var overlapFrames = 0
 
                 for seg in binarySegments {
                     let segStartFrame = Int(seg.startTime / frameDuration)
                     let segEndFrame = min(Int(seg.endTime / frameDuration), probs.count)
 
                     for frame in segStartFrame..<segEndFrame {
+                        totalActiveFrames += 1
                         // Check if other speakers are below offset at this frame
                         var otherActive = false
                         for otherSpk in 0..<3 where otherSpk != localSpk {
@@ -392,7 +402,10 @@ public final class PyannoteDiarizationPipeline {
                                 break
                             }
                         }
-                        if otherActive { continue }
+                        if otherActive {
+                            overlapFrames += 1
+                            continue
+                        }
 
                         // Extract audio samples for this frame
                         let frameStartSample = windowStartSample + Int(Float(frame) * frameDuration * Float(sampleRate))
@@ -409,9 +422,12 @@ public final class PyannoteDiarizationPipeline {
                 // Need minimum 0.5s of audio for a reliable embedding
                 guard spkAudio.count >= minEmbeddingSamples else { continue }
 
+                let overlapRatio = totalActiveFrames > 0
+                    ? Float(overlapFrames) / Float(totalActiveFrames) : 0.0
                 let embedding = embeddingModel.embed(audio: spkAudio, sampleRate: sampleRate)
                 windowEmbeddings.append(WindowSpeakerEmbedding(
-                    windowIndex: wIdx, localSpeakerId: localSpk, embedding: embedding))
+                    windowIndex: wIdx, localSpeakerId: localSpk, embedding: embedding,
+                    overlapRatio: overlapRatio))
             }
         }
         let embedMs = diarElapsedMs(from: tEmbedStart)
@@ -440,8 +456,12 @@ public final class PyannoteDiarizationPipeline {
 
         // Build mapping: (windowIndex, localSpeakerId) → global cluster ID
         var localToGlobal = [Int: [Int: Int]]()  // windowIndex → (localSpeakerId → globalId)
+        // Per-global-speaker overlap ratio: take max across all contributing windows
+        var globalOverlapRatios = [Int: Float]()
         for (i, we) in windowEmbeddings.enumerated() {
-            localToGlobal[we.windowIndex, default: [:]][we.localSpeakerId] = clusterAssignment[i]
+            let globalId = clusterAssignment[i]
+            localToGlobal[we.windowIndex, default: [:]][we.localSpeakerId] = globalId
+            globalOverlapRatios[globalId] = max(globalOverlapRatios[globalId] ?? 0.0, we.overlapRatio)
         }
 
         // Step 4: Build segments with global speaker IDs
@@ -524,10 +544,13 @@ public final class PyannoteDiarizationPipeline {
             finalCentroids = padded
         }
 
+        let finalOverlapRatios = (0..<numSpeakers).map { globalOverlapRatios[$0] ?? 0.0 }
+
         return DiarizationResult(
             segments: merged,
             numSpeakers: numSpeakers,
             speakerEmbeddings: finalCentroids,
+            speakerOverlapRatios: finalOverlapRatios,
             timings: DiarizationTimings(
                 segmentMs: segmentMs,
                 embedMs: embedMs,
